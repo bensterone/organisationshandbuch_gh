@@ -1,19 +1,23 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
-const search = require('../services/search.service');
-const docs = require('../services/documents.service');
+const { globalSearch } = require('../services/search.service');
 
-router.get('/suggest', authenticate, async (req, res, next) => {
-  try { res.json(await search.suggestNavigationTitles(req.query.q || '')); } catch (e) { next(e); }
-});
+router.get('/', authenticate, async (req, res, next) => {
+  try {
+    const q = (req.query.q || '').trim();
+    const limit = req.query.limit || 20;
 
-router.get('/resolve', authenticate, async (req, res, next) => {
-  try { res.json(await search.resolveTitlesToNavIds((req.query.titles || '').split(',').map(s => s.trim()).filter(Boolean))); } catch (e) { next(e); }
-});
+    if (!q) {
+      return res.json({ q, navItems: [], documents: [], processes: [] });
+    }
 
-router.get('/documents', authenticate, async (req, res, next) => {
-  try { res.json(await docs.searchDocuments(req.query.q || '')); } catch (e) { next(e); }
+    const data = await globalSearch(q, limit);
+    res.json(data);
+  } catch (err) {
+    console.error('Search error:', err);
+    next(err);
+  }
 });
 
 module.exports = router;

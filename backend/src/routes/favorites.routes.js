@@ -1,18 +1,20 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
-const fav = require('../services/favorites.service');
 
-router.get('/', authenticate, async (req, res, next) => {
-  try { res.json(await fav.listFavorites(req.user.id)); } catch (e) { next(e); }
+// GET /api/favorites -> []
+router.get('/', authenticate, async (_req, res) => {
+  res.json([]); // stub: no favorites yet
 });
 
-router.post('/', authenticate, async (req, res, next) => {
-  try { res.status(201).json(await fav.addFavorite(req.user.id, req.body.navigation_item_id)); } catch (e) { next(e); }
+// POST /api/favorites/:navId -> { success: true }
+router.post('/:navId', authenticate, async (_req, res) => {
+  res.status(201).json({ success: true });
 });
 
-router.delete('/', authenticate, async (req, res, next) => {
-  try { res.json(await fav.removeFavorite(req.user.id, req.body.navigation_item_id)); } catch (e) { next(e); }
+// DELETE /api/favorites/:navId -> { success: true }
+router.delete('/:navId', authenticate, async (_req, res) => {
+  res.json({ success: true });
 });
 
 module.exports = router;

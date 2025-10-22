@@ -1,22 +1,21 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
-const tags = require('../services/tags.service');
 
-router.get('/', authenticate, async (req, res, next) => {
-  try { res.json(await tags.listTags()); } catch (e) { next(e); }
+// GET /api/tags -> []   (all tags)
+router.get('/', authenticate, async (_req, res) => {
+  res.json([]); // stub: no tags yet
 });
 
-router.get('/document/:id', authenticate, async (req, res, next) => {
-  try { res.json(await tags.listTagsForDocument(req.params.id)); } catch (e) { next(e); }
+// GET /api/tags/by-navigation/:navId -> []   (tags for a nav item)
+router.get('/by-navigation/:navId', authenticate, async (_req, res) => {
+  res.json([]); // stub: none for item
 });
 
-router.post('/attach', authenticate, async (req, res, next) => {
-  try { res.status(201).json(await tags.attachTag(req.body.document_id, req.body.tag_id)); } catch (e) { next(e); }
-});
-
-router.post('/detach', authenticate, async (req, res, next) => {
-  try { res.json(await tags.detachTag(req.body.document_id, req.body.tag_id)); } catch (e) { next(e); }
+// PUT /api/tags/by-navigation/:navId -> { success: true }  (set tags list)
+router.put('/by-navigation/:navId', authenticate, async (_req, res) => {
+  // Expect body: { tags: ["alpha", "beta"] }
+  res.json({ success: true });
 });
 
 module.exports = router;

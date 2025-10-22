@@ -1,14 +1,21 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
-const rec = require('../services/recents.service');
 
-router.get('/', authenticate, async (req, res, next) => {
-  try { res.json(await rec.listRecents(req.user.id, parseInt(req.query.limit) || 20)); } catch (e) { next(e); }
+// GET /api/recents  -> []
+router.get('/', authenticate, async (_req, res) => {
+  res.json([]); // stub: no recents yet
 });
 
-router.post('/', authenticate, async (req, res, next) => {
-  try { res.status(201).json(await rec.trackVisit(req.user.id, req.body.navigation_item_id)); } catch (e) { next(e); }
+// POST /api/recents/track  -> { success: true }
+router.post('/track', authenticate, async (_req, res) => {
+  // You can persist {_req.body.entity_type, _req.body.entity_id, user_id} later
+  res.json({ success: true });
+});
+
+// (Optional) POST /api/recents -> { success: true }
+router.post('/', authenticate, async (_req, res) => {
+  res.status(201).json({ success: true });
 });
 
 module.exports = router;
