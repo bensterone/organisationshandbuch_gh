@@ -44,7 +44,7 @@ const DocumentEditor = ({ docId, initialContent, onSaved }) => {
         attaches: {
           class: AttachesTool,
           config: {
-            endpoint: '/api/files/upload',
+            endpoint: 'files/upload',
           },
         },
       },
@@ -79,7 +79,7 @@ const DocumentEditor = ({ docId, initialContent, onSaved }) => {
         const newQuery = query + e.key;
         setQuery(newQuery);
         if (newQuery.length > 1) {
-          const res = await api.get(`/api/wikilinks/search?q=${encodeURIComponent(newQuery)}`);
+          const res = await api.get(`wikilinks/search?q=${encodeURIComponent(newQuery)}`);
           setResults(res.data || []);
         }
       } else if (e.key === 'Escape' && showPopover) {
@@ -123,7 +123,7 @@ const DocumentEditor = ({ docId, initialContent, onSaved }) => {
     try {
       const edjs = await editorRef.current.save();
       const content_text = extractPlainText(edjs);
-      await api.put(`/api/documents/${docId}`, { content: edjs, content_text });
+      await api.put(`documents/${docId}`, { content: edjs, content_text });
       onSaved?.();
     } catch (e) {
       alert(e.response?.data?.error || 'Failed to save document');

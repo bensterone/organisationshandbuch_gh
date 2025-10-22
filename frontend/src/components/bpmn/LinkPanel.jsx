@@ -4,7 +4,7 @@ import api from '../../services/api';
 import { addLink, deleteLink } from '../../services/links';
 import Button from '../common/Button';
 
-const LinkPanel = ({ processId, element, links, refreshLinks, onClose }) => {
+const LinkPanel = ({ processId, element, links = [], refreshLinks, onClose }) => {
   const [documents, setDocuments] = useState([]);
   const [selectedDoc, setSelectedDoc] = useState('');
   const [description, setDescription] = useState('');
@@ -12,12 +12,14 @@ const LinkPanel = ({ processId, element, links, refreshLinks, onClose }) => {
 
   useEffect(() => {
     if (!processId) return;
-    api.get('/api/navigation')
+    api
+      .get('/navigation')           // baseURL already includes /api
       .then((res) => {
         const docs = res.data.flatMap(flattenDocs);
         setDocuments(docs.filter((d) => d.type === 'document'));
       })
       .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [processId]);
 
   const flattenDocs = (item) => [
@@ -33,20 +35,20 @@ const LinkPanel = ({ processId, element, links, refreshLinks, onClose }) => {
         bpmn_element_id: element.id,
         linked_navigation_item_id: selectedDoc,
         link_type: 'reference',
-        link_description: description
+        link_description: description,
       });
       setSelectedDoc('');
       setDescription('');
       await refreshLinks();
     } catch (e) {
-      alert(e.response?.data?.error || 'Failed to link document');
+      window.alert(e?.response?.data?.error || 'Failed to link document');
     } finally {
       setSaving(false);
     }
   };
 
   const handleDelete = async (linkId) => {
-    if (!confirm('Remove this link?')) return;
+    if (!window.confirm('Delete this link?')) return;
     await deleteLink(processId, linkId);
     await refreshLinks();
   };
@@ -65,7 +67,7 @@ const LinkPanel = ({ processId, element, links, refreshLinks, onClose }) => {
       <div className="p-4 flex-1 overflow-y-auto space-y-4">
         <div>
           <h4 className="font-semibold mb-2">Existing Links</h4>
-          {links.length === 0 ? (
+          {(!links || links.length === 0) ? (
             <p className="text-sm text-gray-500">No links yet.</p>
           ) : (
             <ul className="space-y-2">
@@ -78,10 +80,7 @@ const LinkPanel = ({ processId, element, links, refreshLinks, onClose }) => {
                     <p className="font-medium">{l.document_title}</p>
                     <p className="text-xs text-gray-500">{l.link_description}</p>
                   </div>
-                  <Button
-                    variant="secondary"
-                    onClick={() => handleDelete(l.id)}
-                  >
+                  <Button variant="secondary" onClick={() => handleDelete(l.id)}>
                     ❌
                   </Button>
                 </li>

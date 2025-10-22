@@ -84,7 +84,7 @@ const SmartDiscoverySearch = () => {
       if (cache[q]) {
         backendResults = cache[q];
       } else {
-        const res = await api.get(`/api/discovery?q=${encodeURIComponent(q)}&limit=10`);
+        const res = await api.get(`discovery?q=${encodeURIComponent(q)}&limit=10`);
         backendResults =
           (res.data?.results || []).map((r) => ({
             id: r.id || `semantic-${r.type}-${r.title}`,

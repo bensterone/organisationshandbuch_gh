@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useCallback } from 'react';
 import BpmnModeler from 'bpmn-js/lib/Modeler';
 import api from '../../services/api';
 import 'bpmn-js/dist/assets/diagram-js.css';
@@ -24,23 +24,23 @@ const BPMNEditor = ({ processId, onSave, onElementClick }) => {
     };
   }, [processId]);
 
-  const loadDiagram = async () => {
+  const loadDiagram = useCallback(async () => {
     try {
-      const res = await api.get(`/api/processes/${processId}`);
+      const res = await api.get(`processes/${processId}`);
       await modelerRef.current.importXML(res.data.bpmn_xml);
       const canvas = modelerRef.current.get('canvas');
       canvas.zoom('fit-viewport');
     } catch (err) {
       console.error('Error loading diagram', err);
     }
-  };
+  });
 
-  const setupElementClick = () => {
+  const setupElementClick = useCallback(() => {
     const eventBus = modelerRef.current.get('eventBus');
     eventBus.on('element.click', (e) => {
       if (onElementClick) onElementClick(e.element);
     });
-  };
+  });
 
   const handleSave = async () => {
     const { xml } = await modelerRef.current.saveXML({ format: true });

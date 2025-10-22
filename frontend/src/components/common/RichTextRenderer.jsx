@@ -30,7 +30,7 @@ const RichTextRenderer = ({ text = '', className = '' }) => {
     const load = async () => {
       if (titles.length === 0) { setMap({}); return; }
       const qs = encodeURIComponent(titles.join(','));
-      const res = await api.get(`/api/wikilinks/resolve?titles=${qs}`);
+      const res = await api.get(`wikilinks/resolve?titles=${qs}`);
       if (!mounted) return;
       setMap(res.data || {});
     };

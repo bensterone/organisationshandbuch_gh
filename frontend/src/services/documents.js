@@ -1,35 +1,41 @@
-import api from './api';
+import api from "./api";
 
-// Get latest (or all) content blocks for a navigation item
-export const getByNavigation = async (navigationItemId, { all = false } = {}) => {
-  const res = await api.get(`/api/documents/by-navigation/${navigationItemId}`, {
-    params: { all: all ? 'true' : undefined }
-  });
-  return res.data;
-};
+export async function listDocuments(navigation_item_id) {
+  const { data } = await api.get("/documents", { params: { navigation_item_id } });
+  return data;
+}
 
-// Get a single content block by its content_block id
-export const getDocument = async (id) => {
-  const res = await api.get(`/api/documents/${id}`);
-  return res.data;
-};
+export async function getDocument(id) {
+  const { data } = await api.get(`/documents/${id}`);
+  return data;
+}
 
-// Create a new content version for a navigation item
-export const createDocument = async ({ navigation_item_id, content, content_text }) => {
-  const res = await api.post('/api/documents', {
-    navigation_item_id,
-    content,
-    content_text
-  });
-  return res.data; // { id }
-};
+export async function createDocument(payload) {
+  const { data } = await api.post("/documents", payload);
+  return data;
+}
 
-// Update an existing content block
-export const updateDocument = async (id, { content, content_text }) => {
-  await api.put(`/api/documents/${id}`, { content, content_text });
-};
+export async function updateDocument(id, payload) {
+  const { data } = await api.put(`/documents/${id}`, payload);
+  return data;
+}
 
-// Delete a content block
-export const deleteDocument = async (id) => {
-  await api.delete(`/api/documents/${id}`);
+export async function deleteDocument(id) {
+  const { data } = await api.delete(`/documents/${id}`);
+  return data;
+}
+
+// Back-compat aliases some components still import
+export const getDocumentsByNavigation = listDocuments;
+export const getByNavigation = listDocuments;
+
+const DocumentsService = {
+  listDocuments,
+  getDocument,
+  createDocument,
+  updateDocument,
+  deleteDocument,
+  getDocumentsByNavigation,
+  getByNavigation,
 };
+export default DocumentsService;

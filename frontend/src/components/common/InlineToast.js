@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { X } from 'lucide-react';
 
 /**
@@ -44,13 +44,13 @@ export default function InlineToast({
     }
   }, [duration, sticky]);
 
-  const handleClose = () => {
+  const handleClose = useCallback(() => {
     setClosing(true);
     setTimeout(() => {
       setVisible(false);
       onClose?.();
     }, 200);
-  };
+  });
 
   if (!visible) return null;
 

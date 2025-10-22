@@ -1,167 +1,213 @@
-import React, { useEffect, useState, useRef } from 'react';
-import { useSearchParams, useNavigate } from 'react-router-dom';
-import { FileText, GitBranch, Folder, X } from 'lucide-react';
-import { apiRequest } from '../services/apiResponse';
-import InlineToast from '../components/common/InlineToast';
+import React, { useEffect, useMemo, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import api from "../services/api";
 
-const TypeIcon = ({ type }) => {
-  if (type === 'process') return <GitBranch className="w-4 h-4 text-violet-600" />;
-  if (type === 'folder') return <Folder className="w-4 h-4 text-amber-600" />;
-  return <FileText className="w-4 h-4 text-blue-600" />;
-};
+// defensively resolve a navigation item id from varying API shapes
+function getNavId(item) {
+  // prefer explicit fields if present
+  if (item?.navigation_item_id != null) return item.navigation_item_id;
+  if (item?.nav_id != null) return item.nav_id;
 
-const SearchResults = () => {
-  const [params, setParams] = useSearchParams();
+  // in some old responses, a "navigation" row is returned directly with id
+  // (be careful: documents also have their own "id", so only use as last resort)
+  if (item?.type === "folder" || item?.type === "document" || item?.type === "process") {
+    if (item?.id != null) return item.id;
+  }
+
+  // sometimes nested objects exist
+  if (item?.navigation?.id != null) return item.navigation.id;
+
+  return undefined;
+}
+
+function SectionTitle({ children }) {
+  return <h3 className="text-lg font-semibold mt-6 mb-2">{children}</h3>;
+}
+
+function Row({ icon, title, sub, onClick, disabled }) {
+  const base =
+    "flex items-center justify-between px-3 py-2 rounded border hover:bg-gray-50 transition";
+  const cls = disabled ? `${base} opacity-60 cursor-not-allowed` : `${base} cursor-pointer`;
+  return (
+    <div className={cls} onClick={!disabled ? onClick : undefined}>
+      <div className="flex items-center gap-2">
+        <span className="text-xl">{icon}</span>
+        <div>
+          <div className="font-medium">{title || "(Untitled)"}</div>
+          {sub ? <div className="text-xs text-gray-500">{sub}</div> : null}
+        </div>
+      </div>
+      {!disabled ? <span className="text-gray-400">›</span> : null}
+    </div>
+  );
+}
+
+export default function SearchResults() {
   const navigate = useNavigate();
-  const qParam = params.get('q') || '';
-
-  const [query, setQuery] = useState(qParam);
-  const [results, setResults] = useState([]);
+  const [params, setParams] = useSearchParams();
+  const [q, setQ] = useState(params.get("q") || "");
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [toast, setToast] = useState(null);
-  const [recent, setRecent] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem('recentSearches') || '[]');
-    } catch {
-      return [];
-    }
-  });
-  const [showRecent, setShowRecent] = useState(false);
+  const [res, setRes] = useState({ navigation: [], documents: [], processes: [] });
+  const [error, setError] = useState("");
 
-  const debounceRef = useRef(null);
-
-  // --- handle searching ---
-  const performSearch = async (term) => {
-    if (!term.trim()) {
-      setResults([]);
+  const doSearch = async (term) => {
+    if (!term?.trim()) {
+      setRes({ navigation: [], documents: [], processes: [] });
+      setError("");
       return;
     }
     setLoading(true);
-    setError('');
-    const { data, error } = await apiRequest('get', `/api/search?q=${encodeURIComponent(term)}&limit=50`);
-    if (error) {
-      setError(error);
-      setResults([]);
-      setToast({ type: 'error', message: error });
-    } else if (data?.items?.length) {
-      setResults(data.items);
-      setToast({ type: 'success', message: `${data.items.length} results found` });
-    } else {
-      setResults([]);
-      setToast({ type: 'info', message: 'No results found' });
+    setError("");
+    try {
+      const { data } = await api.get("/search", { params: { q: term } });
+      // normalize buckets
+      setRes({
+        navigation: data.navigation || data.nav || [],
+        documents: data.documents || data.docs || [],
+        processes: data.processes || data.procs || [],
+      });
+    } catch (e) {
+      setError(e?.response?.data?.error || e.message || "Search failed");
+      setRes({ navigation: [], documents: [], processes: [] });
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
-  // --- debounce effect ---
   useEffect(() => {
-    clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      if (query !== qParam) setParams({ q: query });
-      performSearch(query);
-      // Save to recent
-      if (query.trim()) {
-        setRecent((prev) => {
-          const next = [query, ...prev.filter((p) => p !== query)].slice(0, 5);
-          localStorage.setItem('recentSearches', JSON.stringify(next));
-          return next;
-        });
-      }
-    }, 300);
-    return () => clearTimeout(debounceRef.current);
+    // run on initial load if /search?q=...
+    if (q) doSearch(q);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query]);
+  }, []);
 
-  // --- load initial ---
-  useEffect(() => {
-    if (qParam) performSearch(qParam);
-  }, [qParam]);
-
-  const go = (r) => {
-    if (r.type === 'process') navigate(`/processes/${r.id}`);
-    else if (r.type === 'document') navigate(`/documents/${r.id}`);
-    else navigate(`/`);
+  const onSubmit = (e) => {
+    e.preventDefault();
+    setParams(q ? { q } : {});
+    doSearch(q);
   };
 
-  const clearSearch = () => {
-    setQuery('');
-    setResults([]);
-    setError('');
-    setToast(null);
-    localStorage.removeItem('recentSearches');
-  };
+  const navHits = useMemo(() => res.navigation || [], [res]);
+  const docHits = useMemo(() => res.documents || [], [res]);
+  const procHits = useMemo(() => res.processes || [], [res]);
 
   return (
-    <div className="space-y-4">
-      <h1 className="text-2xl font-bold">Search</h1>
+    <div className="p-6">
+      <h1 className="text-3xl font-bold mb-4">Search</h1>
 
-      {/* Search input */}
-      <div className="relative w-full max-w-lg">
+      <form onSubmit={onSubmit} className="flex items-center gap-2 mb-4">
         <input
-          type="text"
-          value={query}
-          onFocus={() => setShowRecent(true)}
-          onBlur={() => setTimeout(() => setShowRecent(false), 200)}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search documents or processes..."
-          className="w-full border rounded-lg py-2 px-3 pr-9 focus:ring-2 focus:ring-primary-500 focus:outline-none"
+          className="flex-1 border rounded px-3 py-2"
+          placeholder="Search documents & processes…"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
         />
-        {query && (
+        {q && (
           <button
-            onClick={clearSearch}
-            className="absolute right-2 top-2 text-gray-400 hover:text-gray-600"
-            title="Clear search"
+            type="button"
+            className="px-3 py-2 rounded border"
+            onClick={() => {
+              setQ("");
+              setParams({});
+              setRes({ navigation: [], documents: [], processes: [] });
+              setError("");
+            }}
           >
-            <X className="w-5 h-5" />
+            Clear
           </button>
         )}
-        {/* Recent dropdown */}
-        {showRecent && recent.length > 0 && (
-          <ul className="absolute z-10 bg-white border border-gray-200 rounded-lg mt-1 w-full shadow-md">
-            {recent.map((r) => (
-              <li
-                key={r}
-                onMouseDown={() => {
-                  setQuery(r);
-                  setShowRecent(false);
-                }}
-                className="px-3 py-2 hover:bg-gray-100 cursor-pointer text-sm text-gray-700"
-              >
-                {r}
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+        <button
+          type="submit"
+          className="px-4 py-2 rounded bg-gray-800 text-white hover:bg-gray-700"
+          disabled={loading}
+        >
+          {loading ? "Searching…" : "Search"}
+        </button>
+      </form>
 
-      {toast && <InlineToast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
+      {!!error && (
+        <div className="mb-4 px-3 py-2 rounded border border-red-300 bg-red-50 text-red-700 text-sm">
+          {error}
+        </div>
+      )}
 
-      {/* Results */}
-      {loading ? (
-        <p className="text-gray-500">Searching…</p>
-      ) : error ? (
-        <p className="text-red-600">{error}</p>
-      ) : results.length === 0 && query.trim() ? (
-        <p className="text-gray-500">No results found for “{query}”.</p>
-      ) : (
-        <ul className="divide-y divide-gray-200 bg-white rounded-xl border">
-          {results.map((r) => (
-            <li key={`${r.type}-${r.id}`} className="p-4 hover:bg-gray-50 cursor-pointer" onClick={() => go(r)}>
-              <div className="flex items-start gap-3">
-                <TypeIcon type={r.type} />
-                <div>
-                  <p className="font-medium">{r.title}</p>
-                  {r.snippet && <p className="text-sm text-gray-600 line-clamp-2">{r.snippet}</p>}
-                  <span className="text-xs uppercase tracking-wide text-gray-400">{r.type}</span>
-                </div>
-              </div>
-            </li>
-          ))}
-        </ul>
+      {/* Navigation hits (optional—can hide if you don’t want this group) */}
+      {navHits.length > 0 && (
+        <>
+          <SectionTitle>Navigation</SectionTitle>
+          <div className="space-y-2">
+            {navHits.map((n) => {
+              const navId = getNavId(n);
+              const disabled = !navId;
+              const title = n.title || n.name || "(Untitled)";
+              const icon = n.type === "folder" ? "📁" : n.type === "process" ? "🔀" : "📄";
+              return (
+                <Row
+                  key={`${n.type || "nav"}-${n.id || navId || Math.random()}`}
+                  icon={icon}
+                  title={title}
+                  sub={n.type}
+                  disabled={disabled}
+                  onClick={() => navigate(`/documents/${navId}`)}
+                />
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {/* Documents */}
+      {docHits.length > 0 && (
+        <>
+          <SectionTitle>Documents</SectionTitle>
+          <div className="space-y-2">
+            {docHits.map((d) => {
+              const navId = getNavId(d);
+              const disabled = !navId;
+              const title = d.title || "(Untitled)";
+              const when =
+                d.updated_at || d.updatedAt || d.created_at || d.createdAt || null;
+              return (
+                <Row
+                  key={`doc-${d.id || navId || Math.random()}`}
+                  icon="📄"
+                  title={title}
+                  sub={when ? new Date(when).toLocaleString() : undefined}
+                  disabled={disabled}
+                  onClick={() => navigate(`/documents/${navId}`)}
+                />
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {/* Processes */}
+      {procHits.length > 0 && (
+        <>
+          <SectionTitle>Processes</SectionTitle>
+          <div className="space-y-2">
+            {procHits.map((p) => {
+              // Prefer explicit process id for /processes/:id route
+              const processId = p.id || p.process_id || p.processId;
+              const disabled = !processId;
+              const title = p.title || p.name || "New Process";
+              return (
+                <Row
+                  key={`proc-${processId || Math.random()}`}
+                  icon="🔀"
+                  title={title}
+                  disabled={disabled}
+                  onClick={() => navigate(`/processes/${processId}`)}
+                />
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {!loading && !error && navHits.length + docHits.length + procHits.length === 0 && q && (
+        <div className="text-sm text-gray-500 mt-6">No results.</div>
       )}
     </div>
   );
-};
-
-export default SearchResults;
+}

@@ -13,17 +13,17 @@ const PrivacySettings = () => {
   const [exportData, setExportData] = useState(null);
 
   useEffect(() => {
-    api.get('/api/privacy/me/consents').then(res => setConsents(res.data || {})).finally(() => setLoading(false));
+    api.get('privacy/me/consents').then(res => setConsents(res.data || {})).finally(() => setLoading(false));
   }, []);
 
   const toggle = async (key) => {
     const next = { ...consents, [key]: { granted: !(consents[key]?.granted) } };
     setConsents(next);
-    await api.put('/api/privacy/me/consents', { [key]: next[key].granted });
+    await api.put('privacy/me/consents', { [key]: next[key].granted });
   };
 
   const requestExport = async () => {
-    const res = await api.get('/api/privacy/me/export');
+    const res = await api.get('privacy/me/export');
     setExportData(res.data);
   };
 

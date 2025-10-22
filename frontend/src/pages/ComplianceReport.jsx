@@ -6,7 +6,7 @@ const ComplianceReport = () => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    api.get('/api/compliance/report/overview').then((res) => {
+    api.get('compliance/report/overview').then((res) => {
       setData(res.data || { dueForReview: [], approvals: [], acknowledgements: [] });
     }).finally(() => setLoading(false));
   }, []);

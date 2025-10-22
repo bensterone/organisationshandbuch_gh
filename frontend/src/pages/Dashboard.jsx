@@ -1,29 +1,33 @@
-import React from 'react';
-import NavigationTree from '../components/navigation/NavigationTree';
-import NewProcessButton from '../components/navigation/NewProcessButton';
+import React, { useEffect, useState } from "react";
+import api from "../services/api";
 
-const Dashboard = () => {
+export default function Dashboard() {
+  const [stats, setStats] = useState({ documents: 0, processes: 0, files: 0 });
+
+  useEffect(() => {
+    api.get("/stats").then((res) => setStats(res.data)).catch(() => {});
+  }, []);
+
   return (
-    <div>
-      <h1 className="text-3xl font-bold mb-6">Dashboard</h1>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-        <div className="bg-white rounded-lg shadow p-6">
-          <h3 className="text-lg font-semibold mb-2">Documents</h3>
-          <p className="text-3xl font-bold text-primary-600">127</p>
-        </div>
-        <div className="bg-white rounded-lg shadow p-6">
-          <h3 className="text-lg font-semibold mb-2">Processes</h3>
-          <p className="text-3xl font-bold text-primary-600">24</p>
-        </div>
-        <div className="bg-white rounded-lg shadow p-6">
-          <h3 className="text-lg font-semibold mb-2">Files</h3>
-          <p className="text-3xl font-bold text-primary-600">542</p>
-        </div>
+    <div className="space-y-6">
+      <h1 className="text-3xl font-bold">Dashboard</h1>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <Card label="Documents" value={stats.documents} />
+        <Card label="Processes" value={stats.processes} />
+        <Card label="Files" value={stats.files} />
       </div>
-      <NewProcessButton />
-      <NavigationTree />
+
+      {/* You can keep any other center content here. The navigation lives in the sidebar now. */}
     </div>
   );
-};
+}
 
-export default Dashboard;
+function Card({ label, value }) {
+  return (
+    <div className="rounded-lg border bg-white p-4">
+      <div className="text-sm text-gray-500">{label}</div>
+      <div className="text-2xl font-semibold">{value}</div>
+    </div>
+  );
+}

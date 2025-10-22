@@ -1,72 +1,100 @@
-import React, { useEffect } from 'react';
-import { useAuthStore } from '../../stores/authStore';
-import Button from '../common/Button';
-import SearchBar from '../search/SearchBar';
-import { Link } from 'react-router-dom';
-import { Brain } from 'lucide-react';
-import { enableMagneticEffect } from '../../utils/magneticEffect';
-import '../../styles/magnetic.css';
+import React, { useEffect, useRef } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import { Menu, Search, X } from "lucide-react";
 
-const Header = () => {
-  const { user, logout } = useAuthStore();
+export default function Header({ onToggleSidebar }) {
+  const inputRef = useRef(null);
+  const navigate = useNavigate();
 
+  // ⌘K / Ctrl+K focuses search
   useEffect(() => {
-    enableMagneticEffect();
+    const onKey = (e) => {
+      const isMac = navigator.platform.toUpperCase().includes("MAC");
+      if ((isMac && e.metaKey && e.key.toLowerCase() === "k") ||
+          (!isMac && e.ctrlKey && e.key.toLowerCase() === "k")) {
+        e.preventDefault();
+        inputRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  const goSearch = (q) => {
+    if (!q.trim()) return;
+    navigate(`/search?q=${encodeURIComponent(q.trim())}`);
+  };
+
   return (
-    <header className="sticky top-0 z-40 bg-white shadow-sm border-b px-6 py-3">
-      <div className="flex items-center justify-between gap-6">
-        {/* Left: Title + Navigation */}
-        <div className="flex items-center gap-6">
-          <h1 className="text-xl font-bold text-gray-800">Organisationshandbuch</h1>
+    <header className="h-14 bg-white border-b px-2 md:px-3 flex items-center gap-2">
+      {/* Sidebar toggle */}
+      <button
+        className="p-2 rounded hover:bg-gray-100"
+        onClick={onToggleSidebar}
+        aria-label="Toggle navigation"
+        title="Toggle navigation"
+      >
+        <Menu className="w-5 h-5" />
+      </button>
 
-          <nav className="flex gap-4 items-center text-sm">
-            <Link to="/" className="magnetic-nav relative text-gray-700 hover:text-blue-600">
-              Home
-              <span className="magnetic-glow" />
-            </Link>
-            <Link
-              to="/documents"
-              className="magnetic-nav relative text-gray-700 hover:text-blue-600"
-            >
-              Documents
-              <span className="magnetic-glow" />
-            </Link>
-            <Link
-              to="/processes"
-              className="magnetic-nav relative text-gray-700 hover:text-blue-600"
-            >
-              Processes
-              <span className="magnetic-glow" />
-            </Link>
-            <Link
-              to="/discovery"
-              className="magnetic-link flex items-center gap-1 text-blue-700 bg-blue-50 px-2 py-1 rounded-md border border-blue-100 transition-all duration-300 relative overflow-hidden"
-              title="Explore all documents and processes semantically"
-            >
-              <Brain className="w-4 h-4" />
-              <span>Smart Discovery</span>
-              <span className="magnetic-glow" />
-            </Link>
-          </nav>
-        </div>
+      {/* Brand */}
+      <Link to="/" className="font-semibold mr-1 whitespace-nowrap">
+        Organisationshandbuch
+      </Link>
 
-        {/* Center: Search */}
-        <div className="flex-1 max-w-md mx-6">
-          <SearchBar />
-        </div>
-
-        {/* Right: User info */}
-        <div className="flex items-center gap-4">
-          <span className="text-sm text-gray-600">{user?.full_name}</span>
-          <Button variant="secondary" onClick={logout}>
-            Logout
-          </Button>
+      {/* Search — shifted left, wider, accessible */}
+      <div className="flex-1 max-w-2xl">
+        <div className="relative">
+          <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <input
+            ref={inputRef}
+            type="search"
+            inputMode="search"
+            aria-label="Search documents and processes"
+            placeholder="Search documents & processes…  (Ctrl/⌘+K)"
+            className="w-full h-10 pl-9 pr-20 rounded-md border focus:outline-none focus:ring-2 focus:ring-primary-500/60 focus:border-primary-500 text-sm"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") goSearch(e.currentTarget.value);
+              if (e.key === "Escape") e.currentTarget.blur();
+            }}
+          />
+          {/* Clear & submit cluster on the right inside the input */}
+          <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-1">
+            <button
+              type="button"
+              className="px-2 py-1 text-xs text-gray-500 hover:text-gray-700"
+              onClick={() => {
+                if (inputRef.current) inputRef.current.value = "";
+                inputRef.current?.focus();
+              }}
+              aria-label="Clear search"
+              title="Clear"
+            >
+              <X className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              className="px-2 py-1 text-xs rounded bg-gray-800 text-white hover:bg-gray-700"
+              onClick={() => inputRef.current && goSearch(inputRef.current.value)}
+              aria-label="Search"
+              title="Search"
+            >
+              Search
+            </button>
+          </div>
         </div>
       </div>
+
+      {/* Right side (minimal) */}
+      <div className="flex-1" />
+      <div className="hidden sm:block text-sm text-gray-500">Administrator</div>
+      <Link
+        to="/login"
+        onClick={() => localStorage.clear()}
+        className="ml-2 text-sm text-blue-600 hover:underline"
+      >
+        Logout
+      </Link>
     </header>
   );
-};
-
-export default Header;
+}

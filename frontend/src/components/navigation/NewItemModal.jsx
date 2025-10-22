@@ -1,86 +1,125 @@
-import React, { useState } from 'react';
-import EmojiPickerPopover from '../common/EmojiPickerPopover';
-import Button from '../common/Button';
-import api from '../../services/api';
+import React, { useState } from "react";
+import api from "../../services/api";
+import { createDocument } from "../../services/documents";
+import { createProcess } from "../../services/processes";
 
-const NewItemModal = ({ parentId = null, onClose, onCreated }) => {
-  const [title, setTitle] = useState('');
-  const [type, setType] = useState('folder');
-  const [icon, setIcon] = useState('📁');
-  const [loading, setLoading] = useState(false);
+const STARTER_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"
+             xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+             targetNamespace="https://example.org/bpmn">
+  <process id="Process_1" isExecutable="false">
+    <startEvent id="StartEvent_1"/>
+  </process>
+</definitions>`;
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setLoading(true);
+// Minimal valid Editor.js document (stringified before sending)
+const EMPTY_EDITORJS_DOC = {
+  time: Date.now(),
+  blocks: [{ type: "paragraph", data: { text: "" } }],
+  version: "2.29.0",
+};
+
+export default function NewItemModal({ onClose, onCreated, parentId = null }) {
+  const [title, setTitle] = useState("");
+  const [type, setType] = useState("folder"); // 'folder' | 'document' | 'process'
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const handleCreate = async () => {
+    if (!title.trim()) {
+      setError("Please enter a title");
+      return;
+    }
+    setError("");
+    setSaving(true);
+
     try {
-      const res = await api.post('/api/navigation', {
+      // 1) Create navigation item
+      const navPayload = {
         parent_id: parentId,
-        title,
-        type,
-        icon
-      });
-      onCreated(res.data);
-      onClose();
-    } catch (err) {
-      alert(err.response?.data?.error || 'Failed to create item');
+        title: title.trim(),
+        type, // 'folder' | 'document' | 'process'
+        sort_order: 0,
+      };
+
+      const { data: navItem } = await api.post("/navigation", navPayload);
+
+      // 2) If document → create a documents row right away
+      if (type === "document") {
+        await createDocument({
+          navigation_item_id: navItem.id,
+          title: title.trim(),
+          // Store a valid Editor.js JSON string
+          content: JSON.stringify(EMPTY_EDITORJS_DOC),
+        });
+      }
+
+      // 3) If process → create processes row with starter BPMN
+      if (type === "process") {
+        await createProcess({
+          navigation_item_id: navItem.id,
+          bpmn_xml: STARTER_BPMN,
+        });
+      }
+
+      // 4) Notify parent, close modal
+      onCreated?.(navItem);
+      onClose?.();
+    } catch (e) {
+      console.error(e);
+      setError(e?.response?.data?.error || "Failed to create item");
     } finally {
-      setLoading(false);
+      setSaving(false);
     }
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 relative">
-        <h2 className="text-xl font-bold mb-4">Create New {type === 'folder' ? 'Folder' : 'Document'}</h2>
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
+      <div className="bg-white rounded-lg w-full max-w-md shadow-xl">
+        <div className="p-4 border-b">
+          <h3 className="font-semibold">Create New</h3>
+        </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="flex items-center gap-2">
-            <EmojiPickerPopover onSelect={(emoji) => setIcon(emoji)}>
-              <span className="text-2xl cursor-pointer">{icon}</span>
-            </EmojiPickerPopover>
-            <input
-              type="text"
-              className="flex-1 border rounded-lg p-2"
-              placeholder="Title"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              required
-            />
-          </div>
+        <div className="p-4 space-y-3">
+          {error && (
+            <div className="text-sm text-red-600" role="alert">
+              {error}
+            </div>
+          )}
 
-          <div className="flex gap-4">
-            <label className="flex items-center gap-1">
-              <input
-                type="radio"
-                name="type"
-                value="folder"
-                checked={type === 'folder'}
-                onChange={() => setType('folder')}
-              />
-              Folder
-            </label>
-            <label className="flex items-center gap-1">
-              <input
-                type="radio"
-                name="type"
-                value="document"
-                checked={type === 'document'}
-                onChange={() => setType('document')}
-              />
-              Document
-            </label>
-          </div>
+          <label className="block text-sm font-medium">Title</label>
+          <input
+            className="w-full border rounded px-3 py-2"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="Title"
+          />
 
-          <div className="flex justify-end gap-2 pt-2">
-            <Button variant="secondary" onClick={onClose}>Cancel</Button>
-            <Button type="submit" loading={loading}>
-              Create
-            </Button>
-          </div>
-        </form>
+          <label className="block text-sm font-medium mt-2">Type</label>
+          <select
+            className="w-full border rounded px-3 py-2"
+            value={type}
+            onChange={(e) => setType(e.target.value)}
+          >
+            <option value="folder">Folder</option>
+            <option value="document">Document</option>
+            <option value="process">Process</option>
+          </select>
+        </div>
+
+        <div className="p-4 border-t flex justify-end gap-2">
+          <button className="px-4 py-2 rounded border" onClick={onClose} disabled={saving}>
+            Cancel
+          </button>
+          <button
+            className="px-4 py-2 rounded bg-primary-600 text-white hover:bg-primary-700"
+            onClick={handleCreate}
+            disabled={saving}
+          >
+            {saving ? "Creating..." : "Create"}
+          </button>
+        </div>
       </div>
     </div>
   );
-};
-
-export default NewItemModal;
+}

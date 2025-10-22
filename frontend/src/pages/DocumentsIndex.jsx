@@ -1,16 +1,12 @@
-import React from 'react';
-import NavigationTree from '../components/navigation/NavigationTree';
+import React from "react";
 
-const DocumentsIndex = () => {
+export default function DocumentsIndex() {
   return (
-    <div>
-      <h1 className="text-2xl font-bold mb-4">Documents</h1>
-      <p className="text-gray-600 mb-4">
-        Select a document in the navigation to view or edit its content. Folders expand/collapse; documents open directly.
+    <div className="space-y-2">
+      <h1 className="text-2xl font-semibold">Documents</h1>
+      <p className="text-sm text-gray-600">
+        Select a document in the left navigation to view or edit its content.
       </p>
-      <NavigationTree />
     </div>
   );
-};
-
-export default DocumentsIndex;
+}

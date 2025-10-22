@@ -19,3 +19,8 @@ body {
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
+
+/* Slightly wider hit area on the gutter */
+[role="separator"][aria-orientation="vertical"] {
+  touch-action: none; /* improves mobile dragging */
+}

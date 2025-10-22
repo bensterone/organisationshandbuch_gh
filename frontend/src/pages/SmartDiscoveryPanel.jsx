@@ -39,10 +39,10 @@ const SmartDiscoveryPanel = () => {
         const item = await getNavigationItem(selected.id);
         let content = null;
         if (item.type === 'document') {
-          const res = await api.get(`/api/documents/${item.id}`);
+          const res = await api.get(`documents/${item.id}`);
           content = res.data;
         } else if (item.type === 'process') {
-          const res = await api.get(`/api/processes/${item.id}`);
+          const res = await api.get(`processes/${item.id}`);
           content = res.data;
         }
         setPreview({ ...item, content });

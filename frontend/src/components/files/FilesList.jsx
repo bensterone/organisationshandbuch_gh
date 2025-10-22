@@ -22,7 +22,7 @@ const FilesList = ({ files, onDeleted }) => {
             <Button
               variant="secondary"
               onClick={async () => {
-                if (!confirm('Delete this file?')) return;
+                if (!window.confirm("Delete this file?")) return;
                 try {
                   await deleteFile(f.id);
                   onDeleted?.();

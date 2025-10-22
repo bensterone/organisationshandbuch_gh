@@ -2,63 +2,61 @@ import React, { useState } from 'react';
 import Button from '../common/Button';
 import { createProcess } from '../../services/processes';
 import { useNavigationStore } from '../../stores/navigationStore';
+import { useNavigate } from "react-router-dom";
+import api from "../../services/api";
 
-const NewProcessButton = () => {
-  const { setItems } = useNavigationStore();
-  const [open, setOpen] = useState(false);
-  const [title, setTitle] = useState('');
-  const [desc, setDesc] = useState('');
-  const [loading, setLoading] = useState(false);
+const STARTER_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"
+             targetNamespace="https://example.org/bpmn">
+  <process id="Process_1" isExecutable="false">
+    <startEvent id="StartEvent_1" />
+  </process>
+</definitions>`;
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (!title.trim()) return;
-    setLoading(true);
+export default function NewProcessButton({ parentId = null }) {
+  const [busy, setBusy] = useState(false);
+  const navigate = useNavigate();
+
+  const handleClick = async () => {
+    if (busy) return;
+    setBusy(true);
     try {
-      await createProcess({ title, description: desc });
-      // refresh tree
-      const res = await fetch('/api/navigation');
-      const items = await res.json();
-      setItems(items);
-      setOpen(false);
-      setTitle('');
-      setDesc('');
-    } catch (err) {
-      alert(err.response?.data?.error || 'Failed to create process');
+      // 1) create a navigation item of type process
+      const title = "New Process";
+      const { data: nav } = await api.post("/navigation", {
+        parent_id: parentId,
+        title,
+        type: "process",
+        sort_order: 0,
+      });
+
+      // 2) create the processes row tied to that navigation item
+      const proc = await createProcess({
+        navigation_item_id: nav.id,
+        bpmn_xml: STARTER_BPMN,
+      });
+
+      const processId = proc?.id ?? proc?.data?.id ?? proc?.process?.id;
+      if (!processId) throw new Error("Could not get process id");
+
+      // 3) jump to the BPMN editor
+      navigate(`/processes/${processId}`);
+    } catch (e) {
+      console.error(e);
+      window.alert(e?.response?.data?.error || "Failed to create process");
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   };
 
   return (
-    <div className="mb-4">
-      {!open ? (
-        <Button onClick={() => setOpen(true)}>+ New Process</Button>
-      ) : (
-        <form onSubmit={handleSubmit} className="bg-white border rounded-lg p-3 mt-2 space-y-2">
-          <input
-            type="text"
-            placeholder="Process title"
-            className="w-full border rounded px-2 py-1"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            required
-          />
-          <textarea
-            placeholder="Description (optional)"
-            className="w-full border rounded px-2 py-1"
-            rows={2}
-            value={desc}
-            onChange={(e) => setDesc(e.target.value)}
-          />
-          <div className="flex gap-2">
-            <Button type="submit" loading={loading}>Create</Button>
-            <Button variant="secondary" onClick={() => setOpen(false)} type="button">Cancel</Button>
-          </div>
-        </form>
-      )}
-    </div>
+    <button
+      onClick={handleClick}
+      disabled={busy}
+      className="text-sm bg-primary-600 text-white px-3 py-1.5 rounded-lg hover:bg-primary-700"
+      title="Create a new BPMN process"
+    >
+      {busy ? "Creating…" : "+ New Process"}
+    </button>
   );
-};
-
-export default NewProcessButton;
+}

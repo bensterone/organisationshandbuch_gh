@@ -1,19 +1,12 @@
-import React, { useEffect, useState, useRef } from 'react';
-import {
-  ChevronRight,
-  ChevronDown,
-  Folder,
-  FileText,
-  Plus,
-  GripVertical,
-  GitBranch,
-} from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
-import { useAuthStore } from '../../stores/authStore';
-import { useNavigationStore } from '../../stores/navigationStore';
-import NewItemModal from './NewItemModal';
-import EmojiPickerPopover from '../common/EmojiPickerPopover';
-import api from '../../services/api';
+// frontend/src/components/navigation/NavigationTree.jsx
+import React, { useEffect, useState, useRef, useCallback } from "react";
+import { ChevronRight, ChevronDown, GripVertical } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { useAuthStore } from "../../stores/authStore";
+import { useNavigationStore } from "../../stores/navigationStore";
+import NewItemModal from "./NewItemModal";
+import api from "../../services/api";
+
 import {
   DndContext,
   DragOverlay,
@@ -21,22 +14,25 @@ import {
   useSensors,
   PointerSensor,
   closestCenter,
-} from '@dnd-kit/core';
-import { SortableContext, useSortable } from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
+} from "@dnd-kit/core";
+import { SortableContext, useSortable } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import {
+  restrictToVerticalAxis,
+  restrictToFirstScrollableAncestor,
+} from "@dnd-kit/modifiers";
 
-/* --------------------------
-   Utility Functions
----------------------------*/
-const flattenTree = (items, parentId = null, depth = 0) => {
-  return items.reduce((acc, item) => {
+/* ---------------------------
+   Helpers
+----------------------------*/
+const flattenTree = (items, parentId = null, depth = 0) =>
+  (items || []).reduce((acc, item) => {
     acc.push({ ...item, parentId, depth });
-    if (item.children && item.children.length > 0) {
+    if (item.children?.length) {
       acc = acc.concat(flattenTree(item.children, item.id, depth + 1));
     }
     return acc;
   }, []);
-};
 
 const findNodeById = (nodes, id) => {
   for (const node of nodes) {
@@ -60,14 +56,14 @@ const removeItem = (nodes, id) => {
 
 const insertIntoParent = (nodes, parentId, item, index) => {
   if (parentId === null) {
-    if (index === undefined || index === null) nodes.push(item);
+    if (index == null) nodes.push(item);
     else nodes.splice(index, 0, item);
     return;
   }
   const parent = findNodeById(nodes, parentId);
   if (!parent) return;
   if (!Array.isArray(parent.children)) parent.children = [];
-  if (index === undefined || index === null) parent.children.push(item);
+  if (index == null) parent.children.push(item);
   else parent.children.splice(index, 0, item);
 };
 
@@ -87,123 +83,167 @@ const buildReorderPayload = (nodes, parentId = null, acc = []) => {
   return acc;
 };
 
-/* --------------------------
-   Sortable Item Wrapper
----------------------------*/
-const SortableItem = ({ id, children }) => {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id });
+/* ---------------------------
+   Sortable row (handle-only)
+----------------------------*/
+const SortableRow = ({ id, children }) => {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    setActivatorNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id });
+
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
     opacity: isDragging ? 0.6 : 1,
   };
-  return (
-    <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
-      {children}
-    </div>
-  );
+
+  return children({
+    setNodeRef,
+    setActivatorNodeRef,
+    attributes,
+    listeners,
+    style,
+    isDragging,
+  });
 };
 
-/* --------------------------
+/* ---------------------------
    Component
----------------------------*/
+----------------------------*/
 const NavigationTree = () => {
   const { items, setItems, expandedItems, toggleExpanded } = useNavigationStore();
   const { user } = useAuthStore();
   const navigate = useNavigate();
 
   const [editingItemId, setEditingItemId] = useState(null);
-  const [editTitle, setEditTitle] = useState('');
+  const [editTitle, setEditTitle] = useState("");
   const [showNewModal, setShowNewModal] = useState(false);
+
   const [draggingId, setDraggingId] = useState(null);
   const [draggingItem, setDraggingItem] = useState(null);
   const [dropTargetId, setDropTargetId] = useState(null);
-  const [dropPosition, setDropPosition] = useState(null); // 'above' | 'below' | 'inside'
+  const [dropPosition, setDropPosition] = useState(null); // "above" | "inside" | "below"
 
   const hoverTimer = useRef(null);
-  const sensors = useSensors(useSensor(PointerSensor));
+  const lastInsideFolderIdRef = useRef(null);
+  const lastOverIdRef = useRef(null); // remember last valid drop target
 
-  /* --------------------------
-     Fetch and Update
-  ---------------------------*/
-  const reloadItems = async () => {
-    const res = await api.get('/api/navigation');
-    setItems(res.data);
-  };
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 6 }, // slight nudge to start dragging
+    })
+  );
+
+  const reloadItems = useCallback(async () => {
+    const res = await api.get("/navigation");
+    const data = Array.isArray(res.data) ? res.data : res.data?.items ?? [];
+    setItems(data);
+  }, [setItems]);
 
   useEffect(() => {
     reloadItems();
-  }, []);
+  }, [reloadItems]);
 
   const updateTitle = async (itemId, newTitle) => {
     try {
-      await api.put(`/api/navigation/${itemId}`, { title: newTitle });
+      await api.put(`navigation/${itemId}`, { title: newTitle });
       await reloadItems();
     } catch {
-      alert('Failed to rename item');
+      alert("Failed to rename item");
     }
   };
 
-  /* --------------------------
-     Drag & Drop Handlers
-  ---------------------------*/
+  /* ---------------------------
+     DnD
+  ----------------------------*/
   const handleDragStart = (event) => {
     setDraggingId(event.active.id);
     const flat = flattenTree(items);
-    const item = flat.find((n) => n.id === event.active.id);
-    setDraggingItem(item || null);
+    setDraggingItem(flat.find((n) => n.id === event.active.id) || null);
+    lastInsideFolderIdRef.current = null;
+    lastOverIdRef.current = null;
   };
 
   const handleDragOver = (event) => {
-    const { over, delta, active } = event;
+    const { over } = event;
+
     if (!over) {
       setDropTargetId(null);
+      lastInsideFolderIdRef.current = null;
       return;
     }
 
+    lastOverIdRef.current = over.id;
+
     const overId = over.id;
-    const target = document.querySelector(`[data-id="${overId}"]`);
-    if (!target) return;
+    const el = document.querySelector(`[data-id="${overId}"]`);
+    if (!el) return;
 
-    const rect = target.getBoundingClientRect();
+    const rect = el.getBoundingClientRect();
     const cursorY = event.delta.y + event.active.rect.current.initial.top;
-    const relativeY = cursorY - rect.top;
+    const relY = cursorY - rect.top;
 
-    let position = 'inside';
-    if (relativeY < rect.height * 0.25) position = 'above';
-    else if (relativeY > rect.height * 0.75) position = 'below';
+    // Top 20% => above, bottom 20% => below, middle 60% => inside
+    const topZone = rect.height * 0.2;
+    const bottomZone = rect.height * 0.8;
+
+    let position = "inside";
+    if (relY < topZone) position = "above";
+    else if (relY > bottomZone) position = "below";
 
     setDropTargetId(overId);
     setDropPosition(position);
 
-    // Auto-expand on hover
+    // Auto-expand + remember intended folder when hovering "inside"
     const flatTree = flattenTree(items);
     const node = flatTree.find((n) => n.id === overId);
-    if (node?.type === 'folder' && position === 'inside' && !expandedItems.has(node.id)) {
-      clearTimeout(hoverTimer.current);
-      hoverTimer.current = setTimeout(() => toggleExpanded(node.id), 400);
+
+    if (node?.type === "folder") {
+      if (position === "inside") {
+        lastInsideFolderIdRef.current = node.id;
+      }
+      if (!expandedItems.has(node.id) && position === "inside") {
+        clearTimeout(hoverTimer.current);
+        hoverTimer.current = setTimeout(() => toggleExpanded(node.id), 150);
+      }
     }
   };
 
   const handleDragEnd = async (event) => {
     clearTimeout(hoverTimer.current);
+    const { active, over } = event;
+
+    // derive a safe target even if pointer left the list momentarily
+    const effectiveOverId = over?.id ?? lastOverIdRef.current;
+
     setDropTargetId(null);
     setDropPosition(null);
-    const { active, over } = event;
     setDraggingId(null);
     setDraggingItem(null);
-    if (!over) return;
+
+    if (!effectiveOverId) return;
 
     const flat = flattenTree(items);
     const dragged = flat.find((n) => n.id === active.id);
-    const target = flat.find((n) => n.id === over.id);
+    const target = flat.find((n) => n.id === effectiveOverId);
     if (!dragged || !target) return;
 
     let newParentId = target.parentId;
     let insertIndex = null;
 
-    if (dropPosition === 'inside' && target.type === 'folder') {
+    // Prefer the most recent folder hovered "inside" (sticky target)
+    const stickyFolderId = lastInsideFolderIdRef.current;
+    if (stickyFolderId) {
+      newParentId = stickyFolderId;
+      const parentNode = findNodeById(items, newParentId);
+      insertIndex = parentNode?.children?.length || 0;
+    } else if (dropPosition === "inside" && target.type === "folder") {
       newParentId = target.id;
       const parentNode = findNodeById(items, newParentId);
       insertIndex = parentNode?.children?.length || 0;
@@ -211,154 +251,141 @@ const NavigationTree = () => {
       const parentNode =
         target.parentId === null ? { children: items } : findNodeById(items, target.parentId);
       const targetIdx = parentNode?.children?.findIndex((c) => c.id === target.id) ?? -1;
-      insertIndex = dropPosition === 'above' ? targetIdx : targetIdx + 1;
+      insertIndex = dropPosition === "above" ? targetIdx : targetIdx + 1;
     }
+
+    lastInsideFolderIdRef.current = null;
 
     const updatedTree = moveItemToParentAtIndex(items, dragged.id, newParentId, insertIndex);
     setItems(updatedTree);
 
     try {
       const payload = buildReorderPayload(updatedTree);
-      await api.put('/api/navigation/reorder', payload);
+      await api.put("navigation/reorder", payload);
     } catch (err) {
-      console.error('Reorder failed:', err);
+      console.error("Reorder failed:", err);
+      // Optional: await reloadItems();
     }
   };
 
-  /* --------------------------
-     Process Open
-  ---------------------------*/
+  /* ---------------------------
+     Open item
+  ----------------------------*/
   const openProcess = async (navigationItemId) => {
     try {
-      const res = await api.get(`/api/processes/by-navigation/${navigationItemId}`);
+      const res = await api.get(`processes/by-navigation/${navigationItemId}`);
       navigate(`/processes/${res.data.id}`);
     } catch {
-      alert('No process definition found for this item');
+      alert("No process definition found for this item");
     }
   };
 
-  /* --------------------------
-     Recursive TreeNode
-  ---------------------------*/
+  /* ---------------------------
+     Tree row
+  ----------------------------*/
   const TreeNode = ({ item, level = 0 }) => {
     const isExpanded = expandedItems.has(item.id);
     const hasChildren = item.children?.length > 0;
-    const Icon =
-      item.type === 'folder' ? Folder : item.type === 'process' ? GitBranch : FileText;
 
     const handleClick = () => {
-      if (item.type === 'folder') toggleExpanded(item.id);
-      else if (item.type === 'document') navigate(`/documents/${item.id}`);
-      else if (item.type === 'process') openProcess(item.id);
+      if (item.type === "folder") {
+        toggleExpanded(item.id);
+      } else if (item.type === "process") {
+        openProcess(item.id);
+      } else {
+        navigate(`/documents/${item.id}`);
+      }
     };
 
-    const showLineAbove = dropTargetId === item.id && dropPosition === 'above';
-    const showLineBelow = dropTargetId === item.id && dropPosition === 'below';
+    const showLineAbove = dropTargetId === item.id && dropPosition === "above";
+    const showLineBelow = dropTargetId === item.id && dropPosition === "below";
 
     return (
       <div data-id={item.id} className="relative">
-        {/* Vertical indentation lines */}
-        {level > 0 && (
-          <div
-            className="absolute left-0 top-0 bottom-0 border-l border-dotted border-gray-300/70"
-            style={{ marginLeft: `${level * 20}px` }}
-          ></div>
-        )}
+        {showLineAbove && <div className="h-[2px] bg-blue-400/50 rounded-full mx-2 mb-1" />}
 
-        {showLineAbove && (
-          <div className="h-[2px] bg-blue-400/50 rounded-full mx-2 mb-1 transition-all duration-100" />
-        )}
-
-        <SortableItem id={item.id}>
-          <div
-            className={`flex items-center py-1.5 px-2 rounded cursor-pointer select-none transition-all relative
-              ${
-                draggingId === item.id
-                  ? 'bg-blue-100/70 shadow-inner'
-                  : dropTargetId === item.id && dropPosition === 'inside'
-                  ? 'bg-blue-50/70 border border-blue-300/30 shadow-sm'
-                  : item.id === editingItemId
-                  ? 'bg-blue-50'
-                  : 'hover:bg-gray-100'
-              }`}
-            style={{ paddingLeft: `${level * 20 + 8}px` }}
-            onClick={handleClick}
-          >
-            {(user?.role === 'admin' || user?.role === 'editor') && (
-              <GripVertical className="w-4 h-4 text-gray-300 mr-1 cursor-grab" />
-            )}
-
-            {item.type === 'folder' && hasChildren && (
-              isExpanded ? (
-                <ChevronDown className="w-4 h-4 mr-1" />
-              ) : (
-                <ChevronRight className="w-4 h-4 mr-1" />
-              )
-            )}
-
-            {(user?.role === 'admin' || user?.role === 'editor') ? (
-              <EmojiPickerPopover
-                onSelect={async (emoji) => {
-                  await api.put(`/api/navigation/${item.id}/icon`, { icon: emoji });
-                  await reloadItems();
-                }}
+        <SortableRow id={item.id}>
+          {({ setNodeRef, setActivatorNodeRef, listeners, style }) => (
+            <div ref={setNodeRef} style={style}>
+              <div
+                className="flex items-center py-1.5 px-2 rounded cursor-pointer hover:bg-gray-100"
+                style={{ paddingLeft: `${level * 16 + 6}px` }}
+                onClick={handleClick}
               >
-                <span className="mr-2 text-lg">{item.icon || '📄'}</span>
-              </EmojiPickerPopover>
-            ) : (
-              <span className="mr-2 text-lg">{item.icon || '📄'}</span>
-            )}
+                {(user?.role === "admin" || user?.role === "editor") && (
+                  <span
+                    ref={setActivatorNodeRef}
+                    {...listeners}
+                    className="mr-1 inline-flex items-center justify-center w-4 h-4 text-gray-300 cursor-grab hover:text-gray-500"
+                    title="Drag to reorder"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <GripVertical className="w-4 h-4" />
+                  </span>
+                )}
 
-            {editingItemId === item.id ? (
-              <input
-                type="text"
-                value={editTitle}
-                onChange={(e) => setEditTitle(e.target.value)}
-                onKeyDown={async (e) => {
-                  if (e.key === 'Enter') {
-                    if (editTitle.trim() && editTitle !== item.title)
-                      await updateTitle(item.id, editTitle);
-                    setEditingItemId(null);
-                  } else if (e.key === 'Escape') {
-                    setEditingItemId(null);
-                  }
-                }}
-                onBlur={async () => {
-                  if (editTitle.trim() && editTitle !== item.title)
-                    await updateTitle(item.id, editTitle);
-                  setEditingItemId(null);
-                }}
-                autoFocus
-                className="text-sm border border-primary-300 rounded px-1 py-0.5 w-full"
-              />
-            ) : (
-              <span
-                className="text-sm cursor-pointer hover:bg-gray-100 rounded px-1"
-                title={
-                  user?.role === 'editor' || user?.role === 'admin'
-                    ? 'Double-click to rename'
-                    : ''
-                }
-                onDoubleClick={() => {
-                  if (user?.role === 'admin' || user?.role === 'editor') {
-                    setEditingItemId(item.id);
-                    setEditTitle(item.title);
-                  }
-                }}
-              >
-                {item.title}
-              </span>
-            )}
-          </div>
-        </SortableItem>
+                {item.type === "folder" ? (
+                  isExpanded ? (
+                    <ChevronDown className="w-4 h-4 mr-1" />
+                  ) : (
+                    <ChevronRight className="w-4 h-4 mr-1" />
+                  )
+                ) : (
+                  <span className="w-4 h-4 mr-1" />
+                )}
 
-        {showLineBelow && (
-          <div className="h-[2px] bg-blue-400/50 rounded-full mx-2 mt-1 transition-all duration-100" />
-        )}
+                <span className="mr-2 text-lg">
+                  {item.type === "folder" ? "📁" : item.type === "process" ? "🔀" : "📄"}
+                </span>
 
-        {/* Children */}
+                {editingItemId === item.id ? (
+                  <input
+                    type="text"
+                    value={editTitle}
+                    onChange={(e) => setEditTitle(e.target.value)}
+                    onKeyDown={async (e) => {
+                      if (e.key === "Enter") {
+                        if (editTitle.trim() && editTitle !== item.title) {
+                          await updateTitle(item.id, editTitle);
+                        }
+                        setEditingItemId(null);
+                      } else if (e.key === "Escape") {
+                        setEditingItemId(null);
+                      }
+                    }}
+                    onBlur={async () => {
+                      if (editTitle.trim() && editTitle !== item.title) {
+                        await updateTitle(item.id, editTitle);
+                      }
+                      setEditingItemId(null);
+                    }}
+                    autoFocus
+                    className="text-sm border rounded px-1 py-0.5 w-full"
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                ) : (
+                  <span
+                    className="text-sm rounded px-1"
+                    title="Double-click to rename"
+                    onDoubleClick={() => {
+                      if (user?.role === "admin" || user?.role === "editor") {
+                        setEditingItemId(item.id);
+                        setEditTitle(item.title);
+                      }
+                    }}
+                  >
+                    {item.title}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+        </SortableRow>
+
+        {showLineBelow && <div className="h-[2px] bg-blue-400/50 rounded-full mx-2 mt-1" />}
+
         {hasChildren && isExpanded && (
-          <div className="border-l border-dotted border-gray-300/70 ml-[20px]">
+          <div className="ml-4 border-l border-dotted border-gray-300/70">
             {item.children.map((child) => (
               <TreeNode key={child.id} item={child} level={level + 1} />
             ))}
@@ -370,52 +397,50 @@ const NavigationTree = () => {
 
   const flatIds = flattenTree(items).map((n) => n.id);
 
-  const DragGhost = ({ item }) => {
-    if (!item) return null;
-    return (
-      <div className="flex items-center px-3 py-1.5 bg-white rounded-lg shadow-lg border border-gray-200 opacity-90">
-        <span className="mr-2 text-lg">{item.icon || '📄'}</span>
-        <span className="text-sm font-medium text-gray-800">{item.title}</span>
-      </div>
-    );
-  };
-
-  /* --------------------------
-     Render
-  ---------------------------*/
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="font-semibold">Navigation</h2>
-        {(user?.role === 'admin' || user?.role === 'editor') && (
+    <div className="h-full flex flex-col">
+      {/* Tiny toolbar */}
+      <div className="flex items-center justify-between px-2 py-2 border-b">
+        <div className="text-sm font-semibold text-gray-700">Navigation</div>
+        {(user?.role === "admin" || user?.role === "editor") && (
           <button
             onClick={() => setShowNewModal(true)}
-            className="text-sm bg-primary-600 text-white px-3 py-1.5 rounded-lg hover:bg-primary-700 flex items-center gap-1"
+            className="text-xs bg-primary-600 text-white px-2.5 py-1.5 rounded hover:bg-primary-700"
           >
-            <Plus className="w-4 h-4" /> New
+            + New
           </button>
         )}
       </div>
 
-      {/* Tree with Hierarchical DnD */}
-      <DndContext
-        sensors={sensors}
-        collisionDetection={closestCenter}
-        onDragStart={handleDragStart}
-        onDragOver={handleDragOver}
-        onDragEnd={handleDragEnd}
-      >
-        <SortableContext items={flatIds}>
-          {items.map((item) => (
-            <TreeNode key={item.id} item={item} />
-          ))}
-        </SortableContext>
+      {/* Tree */}
+      <div className="flex-1 overflow-auto">
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          modifiers={[restrictToVerticalAxis, restrictToFirstScrollableAncestor]}
+          onDragStart={handleDragStart}
+          onDragOver={handleDragOver}
+          onDragEnd={handleDragEnd}
+        >
+          <SortableContext items={flatIds}>
+            {items.map((item) => (
+              <TreeNode key={item.id} item={item} />
+            ))}
+          </SortableContext>
 
-        <DragOverlay>{draggingItem ? <DragGhost item={draggingItem} /> : null}</DragOverlay>
-      </DndContext>
+          <DragOverlay>
+            {draggingItem ? (
+              <div className="flex items-center px-3 py-1.5 bg-white rounded-lg shadow border">
+                <span className="mr-2 text-lg">{draggingItem.icon || "📄"}</span>
+                <span className="text-sm font-medium text-gray-800">
+                  {draggingItem.title}
+                </span>
+              </div>
+            ) : null}
+          </DragOverlay>
+        </DndContext>
+      </div>
 
-      {/* Modal */}
       {showNewModal && (
         <NewItemModal onClose={() => setShowNewModal(false)} onCreated={reloadItems} />
       )}

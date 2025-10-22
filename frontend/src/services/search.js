@@ -1,11 +1,8 @@
-import api from './api';
+import api from "./api";
 
-export const globalSearch = async (q, limit = 20) => {
-  const { data } = await api.get('/api/search', { params: { q, limit } });
-  return data?.items || [];
-};
+export async function globalSearch(q, limit = 20) {
+  const { data } = await api.get("/search", { params: { q, limit } });
+  return data; // { q, navItems, documents, processes }
+}
 
-export const searchByTag = async (tag, limit = 50) => {
-  const { data } = await api.get('/api/search/by-tag', { params: { tag, limit } });
-  return data || [];
-};
+export default { globalSearch };

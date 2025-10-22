@@ -26,8 +26,8 @@ const BPMNViewer = ({ processId, onElementClick }) => {
   const loadDiagram = async () => {
     try {
       const [processRes, linksRes] = await Promise.all([
-        api.get(`/api/processes/${processId}`),
-        api.get(`/api/processes/${processId}/links`)
+        api.get(`processes/${processId}`),
+        api.get(`processes/${processId}/links`)
       ]);
 
       await viewerRef.current.importXML(processRes.data.bpmn_xml);

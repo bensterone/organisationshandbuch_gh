@@ -10,7 +10,7 @@ const VersionHistoryPanel = ({ itemId, type, onClose }) => {
   const [busy, setBusy] = useState(false);
 
   const load = async () => {
-    const res = await api.get(`/api/navigation/${itemId}/versions`);
+    const res = await api.get(`navigation/${itemId}/versions`);
     setVersions(res.data);
   };
 
@@ -22,13 +22,13 @@ const VersionHistoryPanel = ({ itemId, type, onClose }) => {
     try {
       let snapshot = {};
       if (type === 'process') {
-        const pd = await api.get(`/api/processes/${itemId}`); // we use navigation_item_id == process nav id
+        const pd = await api.get(`processes/${itemId}`); // we use navigation_item_id == process nav id
         snapshot = { bpmn_xml: pd.data.bpmn_xml };
       } else if (type === 'document') {
-        const cb = await api.get(`/api/documents/${itemId}`); // <-- if you don’t have this yet, we’ll add soon
+        const cb = await api.get(`documents/${itemId}`); // <-- if you don’t have this yet, we’ll add soon
         snapshot = { content: cb.data.content, content_text: cb.data.content_text };
       }
-      await api.post(`/api/navigation/${itemId}/versions`, {
+      await api.post(`navigation/${itemId}/versions`, {
         version_label: label.trim(),
         summary: summary.trim(),
         snapshot
@@ -41,8 +41,8 @@ const VersionHistoryPanel = ({ itemId, type, onClose }) => {
   };
 
   const restore = async (vId) => {
-    if (!confirm('Restore this version? Current content will be overwritten.')) return;
-    await api.post(`/api/navigation/${itemId}/versions/${vId}/restore`);
+    if (!window.confirm("Revert to this version?")) return;
+    await api.post(`navigation/${itemId}/versions/${vId}/restore`);
     alert('Restored.');
   };
 

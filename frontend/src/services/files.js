@@ -1,33 +1,41 @@
-import api from './api';
+import api from "./api";
 
-// List files, optionally by navigation item
-export const listFiles = async (navigation_item_id) => {
-  const res = await api.get('/api/files', {
-    params: { navigation_item_id }
+export async function listFiles(params = {}) {
+  const { data } = await api.get("/files", { params });
+  return data;
+}
+
+export async function uploadFile(formData) {
+  const { data } = await api.post("/files/upload", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
   });
-  return res.data;
-};
+  return data;
+}
 
-// Upload file for a navigation item
-export const uploadFile = async ({ file, navigation_item_id, title, description }) => {
-  const form = new FormData();
-  form.append('file', file);
-  if (navigation_item_id) form.append('navigation_item_id', navigation_item_id);
-  if (title) form.append('title', title);
-  if (description) form.append('description', description);
+export async function deleteFile(id) {
+  const { data } = await api.delete(`/files/${id}`);
+  return data;
+}
 
-  const res = await api.post('/api/files/upload', form, {
-    headers: { 'Content-Type': 'multipart/form-data' }
-  });
-  return res.data; // { id }
-};
+/**
+ * Download a file by id.
+ * Returns { filename, blob }. You can create an object URL to trigger save.
+ */
+export async function downloadFile(id) {
+  const res = await api.get(`/files/${id}/download`, { responseType: "blob" });
+  // Try to extract a filename from Content-Disposition, fallback to id
+  const cd = res.headers?.["content-disposition"] || res.headers?.get?.("content-disposition");
+  let filename = `file-${id}`;
+  if (cd) {
+    const m = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/i.exec(cd);
+    if (m && m[1]) filename = m[1].replace(/^["']|["']$/g, "");
+  }
+  return { filename, blob: res.data };
+}
 
-// Download by id (triggers browser download)
-export const downloadFile = (id) => {
-  window.location.href = `/api/files/${id}/download`;
-};
+/** Convenience: get a direct URL (if you prefer using a plain <a href>) */
+export function getFileDownloadUrl(id) {
+  return `${api.defaults.baseURL?.replace(/\/$/, "") || ""}/files/${id}/download`;
+}
 
-// Delete file
-export const deleteFile = async (id) => {
-  await api.delete(`/api/files/${id}`);
-};
+export default { listFiles, uploadFile, deleteFile, downloadFile, getFileDownloadUrl };

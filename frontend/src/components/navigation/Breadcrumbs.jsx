@@ -8,7 +8,7 @@ const Breadcrumbs = ({ navId }) => {
 
   useEffect(() => {
     const load = async () => {
-      const { data } = await api.get(`/api/navigation/${navId}/breadcrumbs`);
+      const { data } = await api.get(`navigation/${navId}/breadcrumbs`);
       setChain(data || []);
     };
     if (navId) load();

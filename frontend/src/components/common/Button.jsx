@@ -1,88 +1,40 @@
-import React, { useEffect, useRef } from 'react';
-import clsx from 'clsx';
-import '../../styles/magnetic.css';
-import { enableMagneticEffect } from '../../utils/magneticEffect';
+import React from "react";
+import clsx from "clsx";
 
-/**
- * Premium Button (magnetic + ripple + focus animation)
- * ---------------------------------------------------
- * Props:
- * - variant: 'primary' | 'secondary' | 'danger' | 'ghost'
- * - size: 'sm' | 'md' | 'lg'
- * - className: additional tailwind classes
- * - disabled: boolean
- * - onClick: function
- * - children: node
- */
-
-const Button = ({
-  variant = 'primary',
-  size = 'md',
-  className = '',
-  disabled = false,
-  onClick,
+export default function Button({
   children,
-  ...props
-}) => {
-  const btnRef = useRef(null);
-
-  useEffect(() => {
-    enableMagneticEffect();
-  }, []);
-
-  // 💧 Ripple animation on click
-  const handleClick = (e) => {
-    if (disabled) return;
-    const button = btnRef.current;
-    const ripple = document.createElement('span');
-    ripple.className = 'ripple';
-    const rect = button.getBoundingClientRect();
-    const size = Math.max(rect.width, rect.height);
-    const x = e.clientX - rect.left - size / 2;
-    const y = e.clientY - rect.top - size / 2;
-    ripple.style.width = ripple.style.height = `${size}px`;
-    ripple.style.left = `${x}px`;
-    ripple.style.top = `${y}px`;
-    button.appendChild(ripple);
-    setTimeout(() => ripple.remove(), 600);
-
-    if (onClick) onClick(e);
-  };
-
-  const baseStyles =
-    'magnetic-button relative font-medium rounded-md transition-all duration-200 overflow-hidden inline-flex items-center justify-center select-none focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed';
-
-  const sizeStyles = {
-    sm: 'px-2.5 py-1 text-sm',
-    md: 'px-3.5 py-1.5 text-sm',
-    lg: 'px-4 py-2 text-base',
-  }[size];
-
-  const variantStyles = {
+  loading = false,
+  disabled = false,
+  className = "",
+  variant = "primary", // "primary" | "secondary" | "ghost"
+  ...rest // IMPORTANT: this will NOT include `loading` anymore
+}) {
+  const base =
+    "inline-flex items-center justify-center rounded-md px-3 py-1.5 text-sm transition focus:outline-none focus:ring-2 focus:ring-offset-2";
+  const variants = {
     primary:
-      'bg-blue-600 text-white border border-blue-700 hover:bg-blue-700 focus:ring-4 focus:ring-blue-200',
+      "bg-primary-600 text-white hover:bg-primary-700 focus:ring-primary-500 disabled:opacity-60",
     secondary:
-      'bg-gray-100 text-gray-700 border border-gray-300 hover:bg-gray-200 focus:ring-4 focus:ring-gray-200',
-    danger:
-      'bg-red-600 text-white border border-red-700 hover:bg-red-700 focus:ring-4 focus:ring-red-200',
+      "bg-white text-gray-800 border border-gray-300 hover:bg-gray-50 focus:ring-gray-400 disabled:opacity-60",
     ghost:
-      'bg-transparent text-gray-700 border border-transparent hover:bg-gray-50 focus:ring-4 focus:ring-gray-100',
-  }[variant];
+      "bg-transparent text-gray-700 hover:bg-gray-100 focus:ring-gray-300 disabled:opacity-60",
+  };
 
   return (
     <button
-      ref={btnRef}
-      type="button"
-      disabled={disabled}
-      onClick={handleClick}
-      data-variant={variant}
-      className={clsx(baseStyles, sizeStyles, variantStyles, className)}
-      {...props}
+      {...rest}
+      disabled={disabled || loading}
+      className={clsx(base, variants[variant] || variants.primary, className)}
+      type={rest.type || "button"}
     >
-      {children}
-      <span className="magnetic-glow" />
+      {loading ? (
+        <span className="inline-flex items-center gap-2">
+          <span className="animate-pulse">●●●</span>
+          <span>Working…</span>
+        </span>
+      ) : (
+        children
+      )}
     </button>
   );
-};
-
-export default Button;
+}
