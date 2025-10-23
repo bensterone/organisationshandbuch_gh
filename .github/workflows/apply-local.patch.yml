@@ -1,0 +1,41 @@
+name: Apply local patch
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply patch
+        run: |
+          test -f codesherlock-all-fixes.patch
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b fix/codesherlock-all || git switch fix/codesherlock-all
+          git apply --whitespace=fix codesherlock-all-fixes.patch
+          git add -A
+          git commit -m "Fix: address Codesherlock issues + back-compat routes, RBAC, schema alignments" || echo "No changes to commit"
+
+      - name: Open PR
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: fix/codesherlock-all
+          title: "Fix: Codesherlock issues + back-compat"
+          commit-message: "Fix: address Codesherlock issues + back-compat routes, RBAC, schema alignments"
+          body: |
+            Applies the consolidated patch:
+            - Restores legacy endpoints (favorites, recents, navigation, compliance, discovery, wikilinks)
+            - Adds RBAC on documents/files/process updates
+            - Fixes processes service to use `process_definitions` and 404 on missing
+            - Aligns tags/recents/favorites with schema
+            - Ensures file deletion removes the blob
+            - Normalizes search `/resolve` query handling
+          draft: false
