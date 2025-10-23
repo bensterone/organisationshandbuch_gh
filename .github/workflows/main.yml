@@ -1,5 +1,12 @@
-name: Apply Codesherlock patch
-on: { workflow_dispatch: {} }
+name: Apply Codesherlock fixes
+on:
+  workflow_dispatch:
+    inputs:
+      apply_mode:
+        description: "How to apply changes (files|patch)"
+        required: false
+        default: "files"
+
 permissions:
   contents: write
   pull-requests: write
@@ -10,65 +17,636 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
+        with:
+          fetch-depth: 0
 
-      - name: Verify patch exists and normalize line endings
-        run: |
-          test -f codesherlock-all-fixes.patch
-          sed -i 's/\r$//' codesherlock-all-fixes.patch
-   
-      - name: Sanitize and repair patch
-        run: |
-          set -e
-          test -f codesherlock-all-fixes.patch
-
-          # 1) Strip UTF-8 BOM if present
-          sed -i '1s/^\xEF\xBB\xBF//' codesherlock-all-fixes.patch
-
-          # 2) Normalize CRLF to LF
-          sed -i 's/\r$//' codesherlock-all-fixes.patch
-
-          # 3) Remove Markdown code fences if they slipped in
-          if grep -q '^```' codesherlock-all-fixes.patch; then
-            awk 'BEGIN{in=1} /^```/{in = !in; next} in{print}' codesherlock-all-fixes.patch > .patch.clean
-            mv .patch.clean codesherlock-all-fixes.patch
-          fi
-
-          # 4) Fix missing hunk prefixes (space) in content lines
-          #    Between a hunk header and the next 'diff --git', any non-empty
-          #    line that doesn't start with space/+/-/\ gets prefixed with a space.
-          awk '
-            /^diff --git / { in_hunk=0; print; next }
-            /^@@ /        { in_hunk=1; print; next }
-            {
-              if (in_hunk && NF && $0 !~ /^[ +\-\\]/) { print " " $0 }
-              else { print }
-            }
-          ' codesherlock-all-fixes.patch > .patch.fixed && mv .patch.fixed codesherlock-all-fixes.patch
-
-          # Optional: show first lines for debugging
-          echo "---- FIRST 40 LINES (post-fix) ----"
-          nl -ba codesherlock-all-fixes.patch | sed -n '1,40p'
-
-
-      - name: Validate patch
-        run: |
-          git apply --check codesherlock-all-fixes.patch
-
-      - name: Apply patch and commit
+      - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git switch -c fix/codesherlock-all || git switch fix/codesherlock-all
-          git apply --whitespace=fix codesherlock-all-fixes.patch
+
+      - name: Create or switch branch
+        run: |
+          (git switch -c fix/codesherlock-all) || git switch fix/codesherlock-all
+
+      # --- OPTIONAL: try to apply the patch if user selected apply_mode=patch ---
+      - name: (Optional) Write sanitized patch from repo file
+        if: ${{ github.event.inputs.apply_mode == 'patch' }}
+        run: |
+          if [ -f codesherlock-all-fixes.patch ]; then
+            # Sanitize: strip BOM, CRLF, and fenced code blocks if any
+            sed -i '1s/^\xEF\xBB\xBF//' codesherlock-all-fixes.patch || true
+            sed -i 's/\r$//' codesherlock-all-fixes.patch || true
+            if grep -q '^```' codesherlock-all-fixes.patch; then
+              awk 'BEGIN{in=1} /^```/{in=!in; next} in{print}' \
+                codesherlock-all-fixes.patch > .patch.clean && mv .patch.clean codesherlock-all-fixes.patch
+            fi
+            echo "First 30 lines of patch (debug):"
+            nl -ba codesherlock-all-fixes.patch | sed -n '1,30p'
+          else
+            echo "codesherlock-all-fixes.patch not found; skipping patch mode."
+          fi
+
+      - name: (Optional) Validate & apply patch
+        if: ${{ github.event.inputs.apply_mode == 'patch' }}
+        run: |
+          set -e
+          if [ -f codesherlock-all-fixes.patch ]; then
+            git apply --check codesherlock-all-fixes.patch
+            git apply --whitespace=fix codesherlock-all-fixes.patch
+            git add -A
+            git commit -m "Apply Codesherlock fixes via patch" || echo "No changes to commit from patch"
+          else
+            echo "Patch not found; nothing to apply"
+          fi
+
+      # --- DEFAULT: write the corrected files directly (robust path) ---
+      - name: Apply fixes by writing files (default)
+        if: ${{ github.event.inputs.apply_mode != 'patch' }}
+        run: |
+          set -e
+
+          mkdir -p backend/src/utils
+          cat > backend/src/utils/jwt.js <<'JS'
+          const jwt = require('jsonwebtoken');
+          const SECRET = process.env.JWT_SECRET || 'change-me';
+          const DEFAULT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '8h';
+
+          function generateToken(payload, expiresIn = DEFAULT_EXPIRES_IN) {
+            return jwt.sign(payload, SECRET, { expiresIn });
+          }
+
+          function verifyToken(token) {
+            return jwt.verify(token, SECRET);
+          }
+
+          module.exports = { generateToken, verifyToken };
+          JS
+
+          mkdir -p backend/src/services
+          cat > backend/src/services/processes.service.js <<'JS'
+          const { query } = require('../config/database');
+
+          async function listProcesses(navigation_item_id) {
+            const rows = await query(
+              `SELECT p.id, p.navigation_item_id, p.bpmn_xml, p.version, p.updated_at, u.full_name AS updated_by_name
+                 FROM process_definitions p
+                 LEFT JOIN users u ON u.id = p.updated_by
+                WHERE p.navigation_item_id = ?
+                ORDER BY p.updated_at DESC`,
+              [navigation_item_id]
+            );
+            return rows;
+          }
+
+          async function getProcess(id) {
+            const rows = await query(
+              `SELECT p.id, p.navigation_item_id, p.bpmn_xml, p.version, p.updated_at, u.full_name AS updated_by_name
+                 FROM process_definitions p
+                 LEFT JOIN users u ON u.id = p.updated_by
+                WHERE p.id = ? LIMIT 1`,
+              [id]
+            );
+            return rows[0] || null;
+          }
+
+          async function createProcess(data, userId) {
+            const { navigation_item_id, bpmn_xml } = data;
+            const result = await query(
+              `INSERT INTO process_definitions (navigation_item_id, bpmn_xml, version, updated_by)
+               VALUES (?, ?, 1, ?)`,
+              [navigation_item_id, bpmn_xml, userId]
+            );
+            return await getProcess(result.insertId);
+          }
+
+          async function updateProcess(id, data, userId) {
+            const { bpmn_xml } = data;
+            await query(
+              `UPDATE process_definitions SET bpmn_xml = ?, version = version + 1, updated_by = ?, updated_at = NOW()
+               WHERE id = ?`,
+              [bpmn_xml, userId, id]
+            );
+            return await getProcess(id);
+          }
+
+          module.exports = { listProcesses, getProcess, createProcess, updateProcess };
+          JS
+
+          mkdir -p backend/src/routes
+          cat > backend/src/routes/processes.routes.js <<'JS'
+          const express = require('express');
+          const router = express.Router();
+          const { authenticate, authorize } = require('../middleware/auth');
+          const proc = require('../services/processes.service');
+
+          router.get('/', authenticate, async (req, res, next) => {
+            try { res.json(await proc.listProcesses(req.query.navigation_item_id)); } catch (e) { next(e); }
+          });
+
+          router.get('/:id', authenticate, async (req, res, next) => {
+            try {
+              const item = await proc.getProcess(req.params.id);
+              if (!item) return res.status(404).json({ error: 'Process not found' });
+              res.json(item);
+            } catch (e) { next(e); }
+          });
+
+          router.post('/', authenticate, authorize('editor','admin'), async (req, res, next) => {
+            try { res.status(201).json(await proc.createProcess(req.body, req.user.id)); } catch (e) { next(e); }
+          });
+
+          router.put('/:id', authenticate, authorize('editor','admin'), async (req, res, next) => {
+            try { res.json(await proc.updateProcess(req.params.id, req.body, req.user.id)); } catch (e) { next(e); }
+          });
+
+          module.exports = router;
+          JS
+
+          cat > backend/src/services/recents.service.js <<'JS'
+          const { query } = require('../config/database');
+
+          async function listRecents(userId, limit = 20) {
+            return query(
+              `SELECT r.navigation_item_id, ni.title, ni.type, MAX(r.visited_at) AS last_visited
+                 FROM user_recents r
+                 JOIN navigation_items ni ON ni.id = r.navigation_item_id
+                WHERE r.user_id = ?
+                GROUP BY r.navigation_item_id, ni.title, ni.type
+                ORDER BY last_visited DESC
+                LIMIT ?`,
+              [userId, limit]
+            );
+          }
+
+          async function trackVisit(userId, navigation_item_id) {
+            await query(
+              `INSERT INTO user_recents (user_id, navigation_item_id, visited_at)
+               VALUES (?, ?, NOW())`,
+              [userId, navigation_item_id]
+            );
+            return { success: true };
+          }
+
+          module.exports = { listRecents, trackVisit };
+          JS
+
+          cat > backend/src/routes/recents.routes.js <<'JS'
+          const express = require('express');
+          const router = express.Router();
+          const { authenticate } = require('../middleware/auth');
+          const rec = require('../services/recents.service');
+
+          router.get('/me', authenticate, async (req, res, next) => {
+            try { res.json(await rec.listRecents(req.user.id, parseInt(req.query.limit) || 20)); } catch (e) { next(e); }
+          });
+
+          router.get('/', authenticate, async (req, res, next) => {
+            try { res.json(await rec.listRecents(req.user.id, parseInt(req.query.limit) || 20)); } catch (e) { next(e); }
+          });
+
+          router.post('/', authenticate, async (req, res, next) => {
+            try {
+              const navId = req.body.navigation_item_id;
+              if (!navId || Number.isNaN(Number(navId))) {
+                return res.status(400).json({ error: 'navigation_item_id is required' });
+              }
+              res.status(201).json(await rec.trackVisit(req.user.id, Number(navId)));
+            } catch (e) { next(e); }
+          });
+
+          module.exports = router;
+          JS
+
+          cat > backend/src/routes/navigation.routes.js <<'JS'
+          const express = require('express');
+          const router = express.Router();
+          const { authenticate, authorize } = require('../middleware/auth');
+          const nav = require('../services/navigation.service');
+          const { query } = require('../config/database');
+
+          router.get('/', authenticate, async (req, res, next) => {
+            try { res.json(await nav.getChildren(null)); } catch (e) { next(e); }
+          });
+
+          router.get('/tree', authenticate, async (req, res, next) => {
+            try {
+              const rows = await query(
+                `SELECT id, parent_id, title, type, position, emoji
+                   FROM navigation_items
+                  ORDER BY COALESCE(parent_id, 0), position, id`
+              );
+              const byId = new Map();
+              rows.forEach(r => byId.set(r.id, { ...r, children: [] }));
+              const roots = [];
+              rows.forEach(r => {
+                const node = byId.get(r.id);
+                if (r.parent_id == null) roots.push(node);
+                else {
+                  const parent = byId.get(r.parent_id);
+                  if (parent) parent.children.push(node); else roots.push(node);
+                }
+              });
+              res.json(roots);
+            } catch (e) { next(e); }
+          });
+
+          router.get('/:id', authenticate, async (req, res, next) => {
+            try {
+              const item = await nav.getNavigationItem(req.params.id);
+              if (!item) return res.status(404).json({ error: 'Navigation item not found' });
+              res.json(item);
+            } catch (e) { next(e); }
+          });
+
+          router.get('/:id/children', authenticate, async (req, res, next) => {
+            try { res.json(await nav.getChildren(req.params.id)); } catch (e) { next(e); }
+          });
+
+          router.get('/children', authenticate, async (req, res, next) => {
+            try { res.json(await nav.getChildren(null)); } catch (e) { next(e); }
+          });
+
+          router.put('/:id/status', authenticate, authorize('editor','admin'), async (req, res, next) => {
+            try {
+              const { status } = req.body || {};
+              if (!status) return res.status(400).json({ error: 'Missing status' });
+              await query(`UPDATE navigation_items SET status = ? WHERE id = ?`, [status, req.params.id]);
+              res.json({ success: true });
+            } catch (e) { next(e); }
+          });
+
+          module.exports = router;
+          JS
+
+          cat > backend/src/services/tags.service.js <<'JS'
+          const { query } = require('../config/database');
+
+          async function listTags() {
+            return query(`SELECT DISTINCT tag AS name FROM document_tags ORDER BY tag ASC`);
+          }
+
+          async function listTagsForNavigationItem(navId) {
+            return query(
+              `SELECT DISTINCT dt.tag AS name
+                 FROM document_tags dt
+                WHERE dt.navigation_item_id = ?`,
+              [navId]
+            );
+          }
+
+          async function setTagsForNavigationItem(navId, tags = []) {
+            await query(`DELETE FROM document_tags WHERE navigation_item_id = ?`, [navId]);
+            for (const t of tags.map(s => String(s).trim()).filter(Boolean)) {
+              await query(`INSERT INTO document_tags (navigation_item_id, tag) VALUES (?, ?)`, [navId, t]);
+            }
+            return { success: true };
+          }
+
+          module.exports = {
+            listTags,
+            listTagsForNavigationItem,
+            setTagsForNavigationItem,
+          };
+          JS
+
+          cat > backend/src/routes/tags.routes.js <<'JS'
+          const express = require('express');
+          const router = express.Router();
+          const { authenticate } = require('../middleware/auth');
+          const tags = require('../services/tags.service');
+
+          router.get('/', authenticate, async (req, res, next) => {
+            try { res.json(await tags.listTags()); } catch (e) { next(e); }
+          });
+
+          router.get('/by-navigation/:navId', authenticate, async (req, res, next) => {
+            try { res.json(await tags.listTagsForNavigationItem(req.params.navId)); } catch (e) { next(e); }
+          });
+
+          router.put('/by-navigation/:navId', authenticate, async (req, res, next) => {
+            try {
+              const list = Array.isArray(req.body?.tags) ? req.body.tags : [];
+              res.json(await tags.setTagsForNavigationItem(req.params.navId, list));
+            } catch (e) { next(e); }
+          });
+
+          module.exports = router;
+          JS
+
+          cat > backend/src/services/wikilinks.service.js <<'JS'
+          const { query } = require('../config/database');
+
+          async function listWikiLinksForItem(navigationItemId) {
+            return query(
+              `SELECT id, from_navigation_item_id, to_document_id, anchor
+                 FROM wikilinks
+                WHERE from_navigation_item_id = ?`,
+              [navigationItemId]
+            );
+          }
+
+          async function resolve(q) {
+            return query(
+              `SELECT id, title
+                 FROM documents
+                WHERE status='published' AND (LOWER(title) LIKE LOWER(?))
+                ORDER BY title ASC
+                LIMIT 10`,
+              [`%${q}%`]
+            );
+          }
+
+          module.exports = {
+            listWikiLinksForItem,
+            resolve,
+          };
+          JS
+
+          cat > backend/src/routes/wikilinks.routes.js <<'JS'
+          const express = require('express');
+          const router = express.Router();
+          const { authenticate } = require('../middleware/auth');
+          const wiki = require('../services/wikilinks.service');
+
+          router.get('/resolve', authenticate, async (req, res, next) => {
+            try {
+              const q = (req.query.q || '').trim();
+              if (!q) return res.json([]);
+              res.json(await wiki.resolve(q));
+            } catch (e) { next(e); }
+          });
+
+          router.get('/:id', authenticate, async (req, res, next) => {
+            try { res.json(await wiki.listWikiLinksForItem(req.params.id)); } catch (e) { next(e); }
+          });
+
+          module.exports = router;
+          JS
+
+          cat > backend/src/routes/search.routes.js <<'JS'
+          const express = require('express');
+          const router = express.Router();
+          const { authenticate } = require('../middleware/auth');
+          const search = require('../services/search.service');
+          const docs = require('../services/documents.service');
+
+          router.get('/suggest', authenticate, async (req, res, next) => {
+            try { res.json(await search.suggestNavigationTitles(req.query.q || '')); } catch (e) { next(e); }
+          });
+
+          router.get('/resolve', authenticate, async (req, res, next) => {
+            try {
+              const raw = Array.isArray(req.query.titles) ? req.query.titles : (req.query.titles || '').split(',');
+              const titles = raw.map(s => String(s).trim()).filter(Boolean);
+              res.json(await search.resolveTitlesToNavIds(titles));
+            } catch (e) { next(e); }
+          });
+
+          module.exports = router;
+          JS
+
+          cat > backend/src/routes/documents.routes.js <<'JS'
+          const express = require('express');
+          const router = express.Router();
+          const { authenticate, authorize } = require('../middleware/auth');
+          const docs = require('../services/documents.service');
+
+          router.get('/', authenticate, async (req, res, next) => {
+            try { res.json(await docs.listDocuments(req.query.navigation_item_id)); } catch (e) { next(e); }
+          });
+
+          router.get('/:id', authenticate, async (req, res, next) => {
+            try { res.json(await docs.getDocument(req.params.id)); } catch (e) { next(e); }
+          });
+
+          router.post('/', authenticate, authorize('editor','admin'), async (req, res, next) => {
+            try { res.status(201).json(await docs.createDocument(req.body, req.user.id)); } catch (e) { next(e); }
+          });
+
+          router.put('/:id', authenticate, authorize('editor','admin'), async (req, res, next) => {
+            try { res.json(await docs.updateDocument(req.params.id, req.body, req.user.id)); } catch (e) { next(e); }
+          });
+
+          module.exports = router;
+          JS
+
+          cat > backend/src/routes/compliance.routes.js <<'JS'
+          const express = require('express');
+          const router = express.Router();
+          const { authenticate } = require('../middleware/auth');
+          const { listCompliance } = require('../services/compliance.service');
+
+          router.get('/', authenticate, async (req, res, next) => {
+            try { res.json(await listCompliance()); } catch (e) { next(e); }
+          });
+
+          router.get('/overview', authenticate, async (req, res, next) => {
+            try { res.json(await listCompliance()); } catch (e) { next(e); }
+          });
+
+          module.exports = router;
+          JS
+
+          cat > backend/src/services/files.service.js <<'JS'
+          const { query } = require('../config/database');
+          const fs = require('fs').promises;
+          const path = require('path');
+
+          async function saveFileRecord(file, userId) {
+            const result = await query(
+              `INSERT INTO files (filename, original_name, mime_type, size, navigation_item_id, uploaded_by)
+               VALUES (?, ?, ?, ?, ?, ?)`,
+              [file.filename, file.original_name, file.mime_type, file.size, file.navigation_item_id, userId]
+            );
+            return result.insertId;
+          }
+
+          async function listFiles({ navigation_item_id }) {
+            const rows = await query(
+              `SELECT id, filename, original_name, mime_type, size, navigation_item_id, uploaded_by, uploaded_at
+                 FROM files
+                WHERE (? IS NULL OR navigation_item_id = ?)
+                ORDER BY uploaded_at DESC`,
+              [navigation_item_id || null, navigation_item_id || null]
+            );
+            return rows;
+          }
+
+          async function deleteFileRecordAndBlob(id) {
+            const rows = await query(`SELECT filename FROM files WHERE id=? LIMIT 1`, [id]);
+            if (!rows[0]) return { success: false, error: 'Not found' };
+            const filename = rows[0].filename;
+            await query(`DELETE FROM files WHERE id=?`, [id]);
+            try {
+              const full = path.join(process.cwd(), 'uploads', filename);
+              await fs.unlink(full);
+            } catch (_) { /* ignore missing */ }
+            return { success: true };
+          }
+
+          module.exports = { saveFileRecord, listFiles, deleteFileRecordAndBlob };
+          JS
+
+          cat > backend/src/routes/files.routes.js <<'JS'
+          const express = require('express');
+          const router = express.Router();
+          const { authenticate, authorize } = require('../middleware/auth');
+          const upload = require('../middleware/upload');
+          const filesService = require('../services/files.service');
+
+          router.get('/', authenticate, async (req, res, next) => {
+            try { res.json(await filesService.listFiles({ navigation_item_id: req.query.navigation_item_id })); } catch (e) { next(e); }
+          });
+
+          router.post('/upload', authenticate, authorize('editor','admin'), upload.single('file'), async (req, res, next) => {
+            try {
+              const file = req.file;
+              if (!file) return res.status(400).json({ error: 'No file uploaded' });
+              const id = await filesService.saveFileRecord({
+                filename: file.filename,
+                original_name: file.originalname,
+                mime_type: file.mimetype,
+                size: file.size,
+                navigation_item_id: req.body.navigation_item_id || null,
+              }, req.user.id);
+              res.status(201).json({ id, filename: file.filename });
+            } catch (e) { next(e); }
+          });
+
+          router.delete('/:id', authenticate, authorize('editor','admin'), async (req, res, next) => {
+            try { res.json(await filesService.deleteFileRecordAndBlob(req.params.id)); } catch (e) { next(e); }
+          });
+
+          module.exports = router;
+          JS
+
+          cat > backend/src/services/favorites.service.js <<'JS'
+          const { query } = require('../config/database');
+
+          async function listFavorites(userId) {
+            return query(
+              `SELECT uf.navigation_item_id, ni.title, ni.type, uf.created_at
+                 FROM user_favorites uf
+                 JOIN navigation_items ni ON ni.id = uf.navigation_item_id
+                WHERE uf.user_id = ?
+                ORDER BY uf.created_at DESC`,
+              [userId]
+            );
+          }
+
+          async function addFavorite(userId, navId) {
+            await query(
+              `INSERT IGNORE INTO user_favorites (user_id, navigation_item_id) VALUES (?, ?)`,
+              [userId, navId]
+            );
+            return { isFavorite: true };
+          }
+
+          async function removeFavorite(userId, navId) {
+            await query(
+              `DELETE FROM user_favorites WHERE user_id=? AND navigation_item_id=?`,
+              [userId, navId]
+            );
+            return { isFavorite: false };
+          }
+
+          async function isFavorite(userId, navId) {
+            const rows = await query(
+              `SELECT 1 FROM user_favorites WHERE user_id=? AND navigation_item_id=? LIMIT 1`,
+              [userId, navId]
+            );
+            return rows.length > 0;
+          }
+
+          async function toggleFavorite(userId, navId) {
+            if (await isFavorite(userId, navId)) {
+              await removeFavorite(userId, navId);
+              return { isFavorite: false };
+            }
+            await addFavorite(userId, navId);
+            return { isFavorite: true };
+          }
+
+          module.exports = { listFavorites, addFavorite, removeFavorite, isFavorite, toggleFavorite };
+          JS
+
+          cat > backend/src/routes/favorites.routes.js <<'JS'
+          const express = require('express');
+          const router = express.Router();
+          const { authenticate } = require('../middleware/auth');
+          const fav = require('../services/favorites.service');
+
+          router.get('/me', authenticate, async (req, res, next) => {
+            try { res.json(await fav.listFavorites(req.user.id)); } catch (e) { next(e); }
+          });
+
+          router.get('/is-favorite/:navId', authenticate, async (req, res, next) => {
+            try {
+              const navId = Number(req.params.navId);
+              if (Number.isNaN(navId)) return res.status(400).json({ error: 'Invalid navId' });
+              res.json({ isFavorite: await fav.isFavorite(req.user.id, navId) });
+            } catch (e) { next(e); }
+          });
+
+          router.post('/toggle', authenticate, async (req, res, next) => {
+            try {
+              const navId = Number(req.body?.navigation_item_id);
+              if (!navId) return res.status(400).json({ error: 'navigation_item_id is required' });
+              res.json(await fav.toggleFavorite(req.user.id, navId));
+            } catch (e) { next(e); }
+          });
+
+          router.delete('/', authenticate, async (req, res, next) => {
+            try {
+              const navId = Number(req.body?.navigation_item_id);
+              if (!navId) return res.status(400).json({ error: 'navigation_item_id is required' });
+              res.json(await fav.removeFavorite(req.user.id, navId));
+            } catch (e) { next(e); }
+          });
+
+          router.get('/', authenticate, async (req, res, next) => {
+            try { res.json(await fav.listFavorites(req.user.id)); } catch (e) { next(e); }
+          });
+
+          router.post('/', authenticate, async (req, res, next) => {
+            try {
+              const navId = Number(req.body?.navigation_item_id);
+              if (!navId) return res.status(400).json({ error: 'navigation_item_id is required' });
+              res.status(201).json(await fav.addFavorite(req.user.id, navId));
+            } catch (e) { next(e); }
+          });
+
+          module.exports = router;
+          JS
+
+          # Small surgical edits via sed (safer than full rewrites):
+
+          # 1) navigation.service.js: ensure createItem returns parent_id: parent_id ?? null
+          if [ -f backend/src/services/navigation.service.js ]; then
+            sed -i "s/return { id: result.insertId, parent_id, title,/return { id: result.insertId, parent_id: parent_id ?? null, title,/g" backend/src/services/navigation.service.js || true
+          fi
+
+          # 2) auth.routes.js: keep previous response shape { user, accessToken }
+          if [ -f backend/src/routes/auth.routes.js ]; then
+            sed -i "s/res\\.json(result);/res.json({ user: result.user, accessToken: result.token });/g" backend/src/routes/auth.routes.js || true
+          fi
+
           git add -A
-          git commit -m "Fix: address Codesherlock issues + back-compat routes, RBAC, schema alignments" || echo "No changes to commit"
+          git commit -m "Fix: Codesherlock issues + back-compat (RBAC, routes, schema alignment, patch-safe)" || echo "No changes to commit"
 
       - name: Open PR
         uses: peter-evans/create-pull-request@v6
         with:
           branch: fix/codesherlock-all
           title: "Fix: Codesherlock issues + back-compat"
-          commit-message: "Fix: address Codesherlock issues + back-compat routes, RBAC, schema alignments"
+          commit-message: "Fix: Codesherlock issues + back-compat (RBAC, routes, schema alignment)"
           body: |
-            Applies the consolidated patch (validated with git apply --check).
+            - Restores legacy endpoints (favorites, recents, navigation, compliance, discovery, wikilinks)
+            - Adds RBAC on documents/files/process updates
+            - Uses `process_definitions` instead of non-existent `processes`
+            - Aligns tags service with schema (navigation_item_id/tag)
+            - Ensures file deletion removes the blob
+            - Normalizes /search/resolve query handling
+            - Keeps login response `{ user, accessToken }`
+            - Fixes navigation createItem to return `parent_id: null` for roots
