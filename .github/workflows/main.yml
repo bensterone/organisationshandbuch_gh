@@ -16,6 +16,40 @@ jobs:
         run: |
           test -f codesherlock-all-fixes.patch
           sed -i 's/\r$//' codesherlock-all-fixes.patch
+   
+      - name: Sanitize and repair patch
+        run: |
+          set -e
+          test -f codesherlock-all-fixes.patch
+
+          # 1) Strip UTF-8 BOM if present
+          sed -i '1s/^\xEF\xBB\xBF//' codesherlock-all-fixes.patch
+
+          # 2) Normalize CRLF to LF
+          sed -i 's/\r$//' codesherlock-all-fixes.patch
+
+          # 3) Remove Markdown code fences if they slipped in
+          if grep -q '^```' codesherlock-all-fixes.patch; then
+            awk 'BEGIN{in=1} /^```/{in = !in; next} in{print}' codesherlock-all-fixes.patch > .patch.clean
+            mv .patch.clean codesherlock-all-fixes.patch
+          fi
+
+          # 4) Fix missing hunk prefixes (space) in content lines
+          #    Between a hunk header and the next 'diff --git', any non-empty
+          #    line that doesn't start with space/+/-/\ gets prefixed with a space.
+          awk '
+            /^diff --git / { in_hunk=0; print; next }
+            /^@@ /        { in_hunk=1; print; next }
+            {
+              if (in_hunk && NF && $0 !~ /^[ +\-\\]/) { print " " $0 }
+              else { print }
+            }
+          ' codesherlock-all-fixes.patch > .patch.fixed && mv .patch.fixed codesherlock-all-fixes.patch
+
+          # Optional: show first lines for debugging
+          echo "---- FIRST 40 LINES (post-fix) ----"
+          nl -ba codesherlock-all-fixes.patch | sed -n '1,40p'
+
 
       - name: Validate patch
         run: |
