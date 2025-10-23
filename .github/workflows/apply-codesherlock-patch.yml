@@ -1,0 +1,751 @@
+name: Apply Codesherlock patch
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Write patch file
+        run: |
+          cat > codesherlock-all-fixes.patch <<'PATCH'
+diff --git a/backend/src/utils/jwt.js b/backend/src/utils/jwt.js
+index 1111111..2222222 100644
+--- a/backend/src/utils/jwt.js
++++ b/backend/src/utils/jwt.js
+@@ -1,10 +1,12 @@
+-const jwt = require('jsonwebtoken');
+-const SECRET = process.env.JWT_SECRET || 'change-me';
+-const EXPIRES_IN = process.env.JWT_EXPIRES_IN || '8h';
+-
+-function generateToken(payload) {
+-  return jwt.sign(payload, SECRET, { expiresIn: EXPIRES_IN });
+-}
++const jwt = require('jsonwebtoken');
++const SECRET = process.env.JWT_SECRET || 'change-me';
++const DEFAULT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '8h';
++
++// Allow callers to override token expiration; default remains env/8h
++function generateToken(payload, expiresIn = DEFAULT_EXPIRES_IN) {
++  return jwt.sign(payload, SECRET, { expiresIn });
++}
+ 
+ function verifyToken(token) {
+   return jwt.verify(token, SECRET);
+diff --git a/backend/src/services/auth.service.js b/backend/src/services/auth.service.js
+index 1111111..2222222 100644
+--- a/backend/src/services/auth.service.js
++++ b/backend/src/services/auth.service.js
+@@ -1,32 +1,32 @@
+   if (!user) return null;
+   const ok = await bcrypt.compare(password, user.password_hash || '');
+   if (!ok) return null;
+-  const token = generateToken({ id: user.id, username: user.username, role: user.role }, jwtExpiresIn);
++  // Honor custom expiration (generateToken now supports it)
++  const token = generateToken({ id: user.id, username: user.username, role: user.role }, jwtExpiresIn);
+   return { user: { id: user.id, username: user.username, full_name: user.full_name, role: user.role }, token };
+ }
+diff --git a/backend/src/services/processes.service.js b/backend/src/services/processes.service.js
+index 1111111..2222222 100644
+--- a/backend/src/services/processes.service.js
++++ b/backend/src/services/processes.service.js
+@@ -1,45 +1,45 @@
+ const { query } = require('../config/database');
+ 
+ async function listProcesses(navigation_item_id) {
+   const rows = await query(
+-    `SELECT p.id, p.navigation_item_id, p.bpmn_xml, p.version, p.updated_at, u.full_name AS updated_by_name
+-     FROM processes p
++    `SELECT p.id, p.navigation_item_id, p.bpmn_xml, p.version, p.updated_at, u.full_name AS updated_by_name
++     FROM process_definitions p
+      LEFT JOIN users u ON u.id = p.updated_by
+      WHERE p.navigation_item_id = ?
+      ORDER BY p.updated_at DESC`,
+     [navigation_item_id]
+   );
+   return rows;
+ }
+ 
+ async function getProcess(id) {
+   const rows = await query(
+-    `SELECT p.id, p.navigation_item_id, p.bpmn_xml, p.version, p.updated_at, u.full_name AS updated_by_name
+-     FROM processes p
++    `SELECT p.id, p.navigation_item_id, p.bpmn_xml, p.version, p.updated_at, u.full_name AS updated_by_name
++     FROM process_definitions p
+      LEFT JOIN users u ON u.id = p.updated_by
+      WHERE p.id = ? LIMIT 1`,
+     [id]
+   );
+   return rows[0] || null;
+ }
+ 
+ async function createProcess(data, userId) {
+   const { navigation_item_id, bpmn_xml } = data;
+   const result = await query(
+-    `INSERT INTO processes (navigation_item_id, bpmn_xml, version, updated_by)
++    `INSERT INTO process_definitions (navigation_item_id, bpmn_xml, version, updated_by)
+      VALUES (?, ?, 1, ?)`,
+     [navigation_item_id, bpmn_xml, userId]
+   );
+   return await getProcess(result.insertId);
+ }
+ 
+ async function updateProcess(id, data, userId) {
+   const { bpmn_xml } = data;
+   await query(
+-    `UPDATE processes SET bpmn_xml=?, version = version + 1, updated_by = ?, updated_at = NOW()
++    `UPDATE process_definitions SET bpmn_xml=?, version = version + 1, updated_by = ?, updated_at = NOW()
+      WHERE id=?`,
+     [bpmn_xml, userId, id]
+   );
+   return await getProcess(id);
+ }
+ 
+ module.exports = { listProcesses, getProcess, createProcess, updateProcess };
+diff --git a/backend/src/routes/processes.routes.js b/backend/src/routes/processes.routes.js
+index 1111111..2222222 100644
+--- a/backend/src/routes/processes.routes.js
++++ b/backend/src/routes/processes.routes.js
+@@ -1,22 +1,31 @@
+-const { authenticate } = require('../middleware/auth');
++const { authenticate, authorize } = require('../middleware/auth');
+ const proc = require('../services/processes.service');
+ 
+ router.get('/', authenticate, async (req, res, next) => {
+   try { res.json(await proc.listProcesses(req.query.navigation_item_id)); } catch (e) { next(e); }
+ });
+ 
+-router.get('/:id', authenticate, async (req, res, next) => {
+-  try { res.json(await proc.getProcess(req.params.id)); } catch (e) { next(e); }
+-});
++router.get('/:id', authenticate, async (req, res, next) => {
++  try {
++    const item = await proc.getProcess(req.params.id);
++    if (!item) return res.status(404).json({ error: 'Process not found' });
++    res.json(item);
++  } catch (e) { next(e); }
++});
+ 
+ router.post('/', authenticate, async (req, res, next) => {
+   try { res.status(201).json(await proc.createProcess(req.body, req.user.id)); } catch (e) { next(e); }
+ });
+ 
+-router.put('/:id', authenticate, async (req, res, next) => {
+-  try { res.json(await proc.updateProcess(req.params.id, req.body, req.user.id)); } catch (e) { next(e); }
+-});
++router.put('/:id', authenticate, authorize('editor','admin'), async (req, res, next) => {
++  try { res.json(await proc.updateProcess(req.params.id, req.body, req.user.id)); } catch (e) { next(e); }
++});
+ 
+ module.exports = router;
+diff --git a/backend/src/services/recents.service.js b/backend/src/services/recents.service.js
+new file mode 100644
+index 0000000..3333333
+--- /dev/null
++++ b/backend/src/services/recents.service.js
+@@ -0,0 +1,38 @@
++const { query } = require('../config/database');
++
++async function listRecents(userId, limit = 20) {
++  return query(
++    `SELECT r.navigation_item_id, ni.title, ni.type, MAX(r.visited_at) AS last_visited
++       FROM user_recents r
++       JOIN navigation_items ni ON ni.id = r.navigation_item_id
++      WHERE r.user_id = ?
++      GROUP BY r.navigation_item_id, ni.title, ni.type
++      ORDER BY last_visited DESC
++      LIMIT ?`,
++    [userId, limit]
++  );
++}
++
++async function trackVisit(userId, navigation_item_id) {
++  await query(
++    `INSERT INTO user_recents (user_id, navigation_item_id, visited_at)
++     VALUES (?, ?, NOW())`,
++    [userId, navigation_item_id]
++  );
++  return { success: true };
++}
++
++module.exports = { listRecents, trackVisit };
+diff --git a/backend/src/routes/recents.routes.js b/backend/src/routes/recents.routes.js
+index 1111111..2222222 100644
+--- a/backend/src/routes/recents.routes.js
++++ b/backend/src/routes/recents.routes.js
+@@ -1,14 +1,26 @@
+ const express = require('express');
+ const router = express.Router();
+ const { authenticate } = require('../middleware/auth');
+ const rec = require('../services/recents.service');
+ 
+-router.get('/', authenticate, async (req, res, next) => {
++// Back-compat: original endpoint used by clients
++router.get('/me', authenticate, async (req, res, next) => {
+   try { res.json(await rec.listRecents(req.user.id, parseInt(req.query.limit) || 20)); } catch (e) { next(e); }
+ });
++// Keep '/' as an alias
++router.get('/', authenticate, async (req, res, next) => {
++  try { res.json(await rec.listRecents(req.user.id, parseInt(req.query.limit) || 20)); } catch (e) { next(e); }
++});
+ 
+ router.post('/', authenticate, async (req, res, next) => {
+-  try { res.status(201).json(await rec.trackVisit(req.user.id, req.body.navigation_item_id)); } catch (e) { next(e); }
++  try {
++    const navId = req.body.navigation_item_id;
++    if (!navId || Number.isNaN(Number(navId))) {
++      return res.status(400).json({ error: 'navigation_item_id is required' });
++    }
++    res.status(201).json(await rec.trackVisit(req.user.id, Number(navId)));
++  } catch (e) { next(e); }
+ });
+ 
+ module.exports = router;
+diff --git a/backend/src/routes/navigation.routes.js b/backend/src/routes/navigation.routes.js
+index 1111111..2222222 100644
+--- a/backend/src/routes/navigation.routes.js
++++ b/backend/src/routes/navigation.routes.js
+@@ -1,30 +1,88 @@
+ const express = require('express');
+ const router = express.Router();
+-const { authenticate } = require('../middleware/auth');
++const { authenticate, authorize } = require('../middleware/auth');
+ const nav = require('../services/navigation.service');
++const { query } = require('../config/database');
+ 
++// Back-compat: GET /api/navigation (root)
++router.get('/', authenticate, async (req, res, next) => {
++  try { res.json(await nav.getChildren(null)); } catch (e) { next(e); }
++});
++
++// Back-compat: full tree built here to avoid changing the service
++router.get('/tree', authenticate, async (req, res, next) => {
++  try {
++    const rows = await query(
++      `SELECT id, parent_id, title, type, position, emoji
++         FROM navigation_items
++        ORDER BY COALESCE(parent_id, 0), position, id`
++    );
++    const byId = new Map();
++    rows.forEach(r => byId.set(r.id, { ...r, children: [] }));
++    const roots = [];
++    rows.forEach(r => {
++      const node = byId.get(r.id);
++      if (r.parent_id == null) roots.push(node);
++      else {
++        const parent = byId.get(r.parent_id);
++        if (parent) parent.children.push(node); else roots.push(node);
++      }
++    });
++    res.json(roots);
++  } catch (e) { next(e); }
++});
++
+ router.get('/:id', authenticate, async (req, res, next) => {
+-  try { res.json(await nav.getNavigationItem(req.params.id)); } catch (e) { next(e); }
++  try {
++    const item = await nav.getNavigationItem(req.params.id);
++    if (!item) return res.status(404).json({ error: 'Navigation item not found' });
++    res.json(item);
++  } catch (e) { next(e); }
+ });
+ 
+ router.get('/:id/children', authenticate, async (req, res, next) => {
+   try { res.json(await nav.getChildren(req.params.id)); } catch (e) { next(e); }
+ });
+ 
++// Also expose root-level children without :id
++router.get('/children', authenticate, async (req, res, next) => {
++  try { res.json(await nav.getChildren(null)); } catch (e) { next(e); }
++});
++
++// Back-compat: status update endpoint with RBAC (implemented inline)
++router.put('/:id/status', authenticate, authorize('editor','admin'), async (req, res, next) => {
++  try {
++    const { status } = req.body || {};
++    if (!status) return res.status(400).json({ error: 'Missing status' });
++    await query(`UPDATE navigation_items SET status = ? WHERE id = ?`, [status, req.params.id]);
++    res.json({ success: true });
++  } catch (e) { next(e); }
++});
++
+ module.exports = router;
+diff --git a/backend/src/routes/tags.routes.js b/backend/src/routes/tags.routes.js
+index 1111111..2222222 100644
+--- a/backend/src/routes/tags.routes.js
++++ b/backend/src/routes/tags.routes.js
+@@ -1,22 +1,31 @@
+ const express = require('express');
+ const router = express.Router();
+ const { authenticate } = require('../middleware/auth');
+ const tags = require('../services/tags.service');
+ 
+ router.get('/', authenticate, async (req, res, next) => {
+   try { res.json(await tags.listTags()); } catch (e) { next(e); }
+ });
+ 
+-router.get('/document/:id', authenticate, async (req, res, next) => {
+-  try { res.json(await tags.listTagsForDocument(req.params.id)); } catch (e) { next(e); }
+-});
++// Schema uses navigation_item_id + tag
++router.get('/by-navigation/:navId', authenticate, async (req, res, next) => {
++  try { res.json(await tags.listTagsForNavigationItem(req.params.navId)); } catch (e) { next(e); }
++});
++
++router.put('/by-navigation/:navId', authenticate, async (req, res, next) => {
++  try {
++    const list = Array.isArray(req.body?.tags) ? req.body.tags : [];
++    res.json(await tags.setTagsForNavigationItem(req.params.navId, list));
++  } catch (e) { next(e); }
++});
+ 
+ module.exports = router;
+diff --git a/backend/src/services/tags.service.js b/backend/src/services/tags.service.js
+index 1111111..2222222 100644
+--- a/backend/src/services/tags.service.js
++++ b/backend/src/services/tags.service.js
+@@ -1,20 +1,49 @@
+ const { query } = require('../config/database');
+ 
+ async function listTags() {
+   return query(`SELECT DISTINCT tag AS name FROM document_tags ORDER BY tag ASC`);
+ }
+ 
+-async function listTagsForDocument(docId) {
+-  return query(`SELECT t.id, t.name
+-                  FROM document_tags dt JOIN tags t ON t.id = dt.tag_id
+-                 WHERE dt.document_id = ?`, [docId]);
+-}
++async function listTagsForNavigationItem(navId) {
++  return query(
++    `SELECT DISTINCT dt.tag AS name
++       FROM document_tags dt
++      WHERE dt.navigation_item_id = ?`,
++    [navId]
++  );
++}
++
++async function setTagsForNavigationItem(navId, tags = []) {
++  await query(`DELETE FROM document_tags WHERE navigation_item_id = ?`, [navId]);
++  for (const t of tags.map(s => String(s).trim()).filter(Boolean)) {
++    await query(`INSERT INTO document_tags (navigation_item_id, tag) VALUES (?, ?)`, [navId, t]);
++  }
++  return { success: true };
++}
+ 
+ module.exports = {
+   listTags,
+-  listTagsForDocument,
++  listTagsForNavigationItem,
++  setTagsForNavigationItem,
+ };
+diff --git a/backend/src/routes/wikilinks.routes.js b/backend/src/routes/wikilinks.routes.js
+index 1111111..2222222 100644
+--- a/backend/src/routes/wikilinks.routes.js
++++ b/backend/src/routes/wikilinks.routes.js
+@@ -1,18 +1,34 @@
+ const express = require('express');
+ const router = express.Router();
+ const { authenticate } = require('../middleware/auth');
+ const wiki = require('../services/wikilinks.service');
+ 
++// Back-compat: restore the /resolve endpoint used by the frontend
++router.get('/resolve', authenticate, async (req, res, next) => {
++  try {
++    const q = (req.query.q || '').trim();
++    if (!q) return res.json([]);
++    res.json(await wiki.resolve(q));
++  } catch (e) { next(e); }
++});
++
+ router.get('/:id', authenticate, async (req, res, next) => {
+   try { res.json(await wiki.listWikiLinksForItem(req.params.id)); } catch (e) { next(e); }
+ });
+ 
+ module.exports = router;
+diff --git a/backend/src/services/wikilinks.service.js b/backend/src/services/wikilinks.service.js
+index 1111111..2222222 100644
+--- a/backend/src/services/wikilinks.service.js
++++ b/backend/src/services/wikilinks.service.js
+@@ -1,20 +1,41 @@
+ const { query } = require('../config/database');
+ 
+ async function listWikiLinksForItem(navigationItemId) {
+   return query(
+     `SELECT id, from_navigation_item_id, to_document_id, anchor
+        FROM wikilinks
+       WHERE from_navigation_item_id = ?`,
+     [navigationItemId]
+   );
+ }
+ 
++// Simple resolver for /resolve?q=... (search published documents)
++async function resolve(q) {
++  return query(
++    `SELECT id, title
++       FROM documents
++      WHERE status='published' AND (LOWER(title) LIKE LOWER(?))
++      ORDER BY title ASC
++      LIMIT 10`,
++    [`%${q}%`]
++  );
++}
++
+ module.exports = {
+   listWikiLinksForItem,
++  resolve,
+ };
+diff --git a/backend/src/routes/search.routes.js b/backend/src/routes/search.routes.js
+index 1111111..2222222 100644
+--- a/backend/src/routes/search.routes.js
++++ b/backend/src/routes/search.routes.js
+@@ -1,19 +1,23 @@
+ const express = require('express');
+ const router = express.Router();
+ const { authenticate } = require('../middleware/auth');
+ const search = require('../services/search.service');
+ const docs = require('../services/documents.service');
+ 
+ router.get('/suggest', authenticate, async (req, res, next) => {
+   try { res.json(await search.suggestNavigationTitles(req.query.q || '')); } catch (e) { next(e); }
+ });
+ 
+ router.get('/resolve', authenticate, async (req, res, next) => {
+-  try { res.json(await search.resolveTitlesToNavIds((req.query.titles || '').split(',').map(s => s.trim()).filter(Boolean))); } catch (e) { next(e); }
++  try {
++    const raw = Array.isArray(req.query.titles) ? req.query.titles : (req.query.titles || '').split(',');
++    const titles = raw.map(s => String(s).trim()).filter(Boolean);
++    res.json(await search.resolveTitlesToNavIds(titles));
++  } catch (e) { next(e); }
+ });
+ 
+ module.exports = router;
+diff --git a/backend/src/routes/documents.routes.js b/backend/src/routes/documents.routes.js
+index 1111111..2222222 100644
+--- a/backend/src/routes/documents.routes.js
++++ b/backend/src/routes/documents.routes.js
+@@ -1,22 +1,22 @@
+ const express = require('express');
+ const router = express.Router();
+-const { authenticate } = require('../middleware/auth');
++const { authenticate, authorize } = require('../middleware/auth');
+ const docs = require('../services/documents.service');
+ 
+ router.get('/', authenticate, async (req, res, next) => {
+   try { res.json(await docs.listDocuments(req.query.navigation_item_id)); } catch (e) { next(e); }
+ });
+ 
+ router.get('/:id', authenticate, async (req, res, next) => {
+   try { res.json(await docs.getDocument(req.params.id)); } catch (e) { next(e); }
+ });
+ 
+-router.post('/', authenticate, async (req, res, next) => {
++router.post('/', authenticate, authorize('editor','admin'), async (req, res, next) => {
+   try { res.status(201).json(await docs.createDocument(req.body, req.user.id)); } catch (e) { next(e); }
+ });
+ 
+-router.put('/:id', authenticate, async (req, res, next) => {
++router.put('/:id', authenticate, authorize('editor','admin'), async (req, res, next) => {
+   try { res.json(await docs.updateDocument(req.params.id, req.body, req.user.id)); } catch (e) { next(e); }
+ });
+ 
+ module.exports = router;
+diff --git a/backend/src/routes/compliance.routes.js b/backend/src/routes/compliance.routes.js
+index 1111111..2222222 100644
+--- a/backend/src/routes/compliance.routes.js
++++ b/backend/src/routes/compliance.routes.js
+@@ -1,10 +1,16 @@
+ const express = require('express');
+ const router = express.Router();
+ const { authenticate } = require('../middleware/auth');
+ const { listCompliance } = require('../services/compliance.service');
+ 
+ router.get('/', authenticate, async (req, res, next) => {
+   try { res.json(await listCompliance()); } catch (e) { next(e); }
+ });
+ 
++// Back-compat: some clients call /api/compliance/overview
++router.get('/overview', authenticate, async (req, res, next) => {
++  try { res.json(await listCompliance()); } catch (e) { next(e); }
++});
++
+ module.exports = router;
+diff --git a/backend/src/services/files.service.js b/backend/src/services/files.service.js
+index 1111111..2222222 100644
+--- a/backend/src/services/files.service.js
++++ b/backend/src/services/files.service.js
+@@ -1,30 +1,49 @@
+ const { query } = require('../config/database');
++const fs = require('fs').promises;
++const path = require('path');
+ 
+ async function saveFileRecord(file, userId) {
+   const result = await query(
+     `INSERT INTO files (filename, original_name, mime_type, size, navigation_item_id, uploaded_by)
+      VALUES (?, ?, ?, ?, ?, ?)`,
+     [file.filename, file.original_name, file.mime_type, file.size, file.navigation_item_id, userId]
+   );
+   return result.insertId;
+ }
+ 
+ async function listFiles({ navigation_item_id }) {
+   const rows = await query(
+     `SELECT id, filename, original_name, mime_type, size, navigation_item_id, uploaded_by, uploaded_at
+        FROM files
+       WHERE (? IS NULL OR navigation_item_id = ?)
+       ORDER BY uploaded_at DESC`,
+     [navigation_item_id || null, navigation_item_id || null]
+   );
+   return rows;
+ }
+ 
+-async function deleteFileRecord(id) {
+-  await query(`DELETE FROM files WHERE id=?`, [id]);
+-  return { success: true };
+-}
++async function deleteFileRecordAndBlob(id) {
++  const rows = await query(`SELECT filename FROM files WHERE id=? LIMIT 1`, [id]);
++  if (!rows[0]) return { success: false, error: 'Not found' };
++  const filename = rows[0].filename;
++  await query(`DELETE FROM files WHERE id=?`, [id]);
++  try {
++    const full = path.join(process.cwd(), 'uploads', filename);
++    await fs.unlink(full);
++  } catch (_) { /* ignore missing */ }
++  return { success: true };
++}
+ 
+-module.exports = { saveFileRecord, listFiles, deleteFileRecord /* ... */ };
++module.exports = { saveFileRecord, listFiles, deleteFileRecordAndBlob /* ... */ };
+diff --git a/backend/src/routes/files.routes.js b/backend/src/routes/files.routes.js
+index 1111111..2222222 100644
+--- a/backend/src/routes/files.routes.js
++++ b/backend/src/routes/files.routes.js
+@@ -1,30 +1,32 @@
+ const express = require('express');
+ const router = express.Router();
+-const { authenticate } = require('../middleware/auth');
++const { authenticate, authorize } = require('../middleware/auth');
+ const upload = require('../middleware/upload');
+ const filesService = require('../services/files.service');
+ 
+ router.get('/', authenticate, async (req, res, next) => {
+   try { res.json(await filesService.listFiles({ navigation_item_id: req.query.navigation_item_id })); } catch (e) { next(e); }
+ });
+ 
+-router.post('/upload', authenticate, upload.single('file'), async (req, res, next) => {
++router.post('/upload', authenticate, authorize('editor','admin'), upload.single('file'), async (req, res, next) => {
+   try {
+     const file = req.file;
+     if (!file) return res.status(400).json({ error: 'No file uploaded' });
+     const id = await filesService.saveFileRecord({
+       filename: file.filename,
+       original_name: file.originalname,
+       mime_type: file.mimetype,
+       size: file.size,
+       navigation_item_id: req.body.navigation_item_id || null,
+     }, req.user.id);
+     res.status(201).json({ id, filename: file.filename });
+   } catch (e) { next(e); }
+ });
+ 
+-router.delete('/:id', authenticate, async (req, res, next) => {
+-  try { res.json(await filesService.deleteFileRecord(req.params.id)); } catch (e) { next(e); }
++router.delete('/:id', authenticate, authorize('editor','admin'), async (req, res, next) => {
++  try { res.json(await filesService.deleteFileRecordAndBlob(req.params.id)); } catch (e) { next(e); }
+ });
+ 
+ module.exports = router;
+diff --git a/backend/src/services/favorites.service.js b/backend/src/services/favorites.service.js
+new file mode 100644
+index 0000000..4444444
+--- /dev/null
++++ b/backend/src/services/favorites.service.js
+@@ -0,0 +1,53 @@
++const { query } = require('../config/database');
++
++async function listFavorites(userId) {
++  return query(
++    `SELECT uf.navigation_item_id, ni.title, ni.type, uf.created_at
++       FROM user_favorites uf
++       JOIN navigation_items ni ON ni.id = uf.navigation_item_id
++      WHERE uf.user_id = ?
++      ORDER BY uf.created_at DESC`,
++    [userId]
++  );
++}
++
++async function addFavorite(userId, navId) {
++  await query(
++    `INSERT IGNORE INTO user_favorites (user_id, navigation_item_id) VALUES (?, ?)`,
++    [userId, navId]
++  );
++  return { isFavorite: true };
++}
++
++async function removeFavorite(userId, navId) {
++  await query(
++    `DELETE FROM user_favorites WHERE user_id=? AND navigation_item_id=?`,
++    [userId, navId]
++  );
++  return { isFavorite: false };
++}
++
++async function isFavorite(userId, navId) {
++  const rows = await query(
++    `SELECT 1 FROM user_favorites WHERE user_id=? AND navigation_item_id=? LIMIT 1`,
++    [userId, navId]
++  );
++  return rows.length > 0;
++}
++
++async function toggleFavorite(userId, navId) {
++  if (await isFavorite(userId, navId)) {
++    await removeFavorite(userId, navId);
++    return { isFavorite: false };
++  }
++  await addFavorite(userId, navId);
++  return { isFavorite: true };
++}
++
++module.exports = { listFavorites, addFavorite, removeFavorite, isFavorite, toggleFavorite };
+diff --git a/backend/src/routes/favorites.routes.js b/backend/src/routes/favorites.routes.js
+index 1111111..2222222 100644
+--- a/backend/src/routes/favorites.routes.js
++++ b/backend/src/routes/favorites.routes.js
+@@ -1,18 +1,54 @@
+ const express = require('express');
+ const router = express.Router();
+ const { authenticate } = require('../middleware/auth');
+ const fav = require('../services/favorites.service');
+ 
+-router.get('/', authenticate, async (req, res, next) => {
+-  try { res.json(await fav.listFavorites(req.user.id)); } catch (e) { next(e); }
+-});
++// Back-compat endpoints
++router.get('/me', authenticate, async (req, res, next) => {
++  try { res.json(await fav.listFavorites(req.user.id)); } catch (e) { next(e); }
++});
++router.get('/is-favorite/:navId', authenticate, async (req, res, next) => {
++  try {
++    const navId = Number(req.params.navId);
++    if (Number.isNaN(navId)) return res.status(400).json({ error: 'Invalid navId' });
++    res.json({ isFavorite: await fav.isFavorite(req.user.id, navId) });
++  } catch (e) { next(e); }
++});
++
++// Legacy toggle endpoint
++router.post('/toggle', authenticate, async (req, res, next) => {
++  try {
++    const navId = Number(req.body?.navigation_item_id);
++    if (!navId) return res.status(400).json({ error: 'navigation_item_id is required' });
++    res.json(await fav.toggleFavorite(req.user.id, navId));
++  } catch (e) { next(e); }
++});
+ 
+ router.delete('/', authenticate, async (req, res, next) => {
+-  try { res.json(await fav.removeFavorite(req.user.id, req.body.navigation_item_id)); } catch (e) { next(e); }
++  try {
++    const navId = Number(req.body?.navigation_item_id);
++    if (!navId) return res.status(400).json({ error: 'navigation_item_id is required' });
++    res.json(await fav.removeFavorite(req.user.id, navId));
++  } catch (e) { next(e); }
+ });
+ 
++// Keep simple list + add endpoints (validate input)
++router.get('/', authenticate, async (req, res, next) => {
++  try { res.json(await fav.listFavorites(req.user.id)); } catch (e) { next(e); }
++});
++router.post('/', authenticate, async (req, res, next) => {
++  try {
++    const navId = Number(req.body?.navigation_item_id);
++    if (!navId) return res.status(400).json({ error: 'navigation_item_id is required' });
++    res.status(201).json(await fav.addFavorite(req.user.id, navId));
++  } catch (e) { next(e); }
++});
++
+ module.exports = router;
+diff --git a/backend/src/routes/auth.routes.js b/backend/src/routes/auth.routes.js
+index 1111111..2222222 100644
+--- a/backend/src/routes/auth.routes.js
++++ b/backend/src/routes/auth.routes.js
+@@ -10,13 +10,16 @@ router.post('/login', async (req, res, next) => {
+   try {
+     const { username, password } = req.body;
+     if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
+     const result = await login(username, password);
+     if (!result) return res.status(401).json({ error: 'Invalid credentials' });
+-    res.json(result);
++    // Maintain previous response shape expected by clients
++    res.json({ user: result.user, accessToken: result.token });
+   } catch (e) { next(e); }
+ });
+ 
+ module.exports = router;
+diff --git a/backend/src/routes/discovery.routes.js b/backend/src/routes/discovery.routes.js
+index 1111111..2222222 100644
+--- a/backend/src/routes/discovery.routes.js
++++ b/backend/src/routes/discovery.routes.js
+@@ -1,10 +1,35 @@
+ const express = require('express');
+ const router = express.Router();
+ const { authenticate } = require('../middleware/auth');
+ const { getDiscoveryForUser } = require('../services/discovery.service');
++const { query } = require('../config/database');
+ 
+ router.get('/', authenticate, async (req, res, next) => {
+   try { res.json(await getDiscoveryForUser(req.user.id)); } catch (e) { next(e); }
+ });
+ 
++// Back-compat: /api/discovery/related?q=...&limit=...
++router.get('/related', authenticate, async (req, res, next) => {
++  try {
++    const q = (req.query.q || '').trim();
++    const limit = Math.min(parseInt(req.query.limit) || 10, 50);
++    if (!q) return res.json([]);
++    const rows = await query(
++      `SELECT d.id, d.title, d.navigation_item_id, d.updated_at
++         FROM documents d
++        WHERE d.status = 'published'
++          AND (LOWER(d.title) LIKE LOWER(?)
++               OR EXISTS (SELECT 1 FROM wikilinks w
++                           WHERE w.to_document_id = d.id AND LOWER(w.anchor) LIKE LOWER(?))
++               OR EXISTS (SELECT 1 FROM document_tags dt
++                           WHERE dt.navigation_item_id = d.navigation_item_id
++                             AND LOWER(dt.tag) LIKE LOWER(?)))
++        ORDER BY d.updated_at DESC
++        LIMIT ?`,
++      [`%${q}%`, `%${q}%`, `%${q}%`, limit]
++    );
++    res.json(rows);
++  } catch (e) { next(e); }
++});
++
+ module.exports = router;
+PATCH
+
+      - name: Apply patch (no commit yet)
+        run: git apply --whitespace=fix codesherlock-all-fixes.patch
+
+      - name: Create PR
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: fix/codesherlock-all
+          commit-message: "Fix: address Codesherlock issues + back-compat routes, RBAC, schema alignments"
+          title: "Fix: Codesherlock issues + back-compat"
+          body: |
+            This PR applies a consolidated patch that:
+            - Restores legacy endpoints used by the frontend (favorites, recents, navigation, compliance, discovery, wikilinks).
+            - Adds missing RBAC on documents/files/process updates.
+            - Fixes processes service to use `process_definitions`, adds 404 on missing.
+            - Aligns tags and recents/favorites with actual schema tables and columns.
+            - Ensures file deletion removes the blob.
+            - Normalizes search `/resolve` query handling.
