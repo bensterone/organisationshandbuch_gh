@@ -2,112 +2,88 @@
 const { query } = require('../config/database');
 const { extractPlainText } = require('../utils/editorjs');
 
-async function createDocument({ navigation_item_id, title, content = '' }) {
-  const content_plain = extractPlainText(content);
+function serializeContent(content) {
+  if (content == null) return '';
+  if (typeof content === 'string') return content;
 
-  const sql = `
-    INSERT INTO documents (navigation_item_id, title, content, content_plain)
-    VALUES (?, ?, ?, ?)
-  `;
-  const result = await query(sql, [
-    navigation_item_id,
-    title,
-    typeof content === 'string' ? content : JSON.stringify(content),
-    content_plain || null,
-  ]);
-  const [doc] = await query(`SELECT * FROM documents WHERE id = ?`, [result.insertId]);
-  return doc;
-}
-
-async function updateDocument(id, payload) {
-  const fields = [];
-  const params = [];
-
-  if (payload.title != null) {
-    fields.push('title = ?');
-    params.push(payload.title);
+  try {
+    return JSON.stringify(content);
+  } catch (err) {
+    return String(content);
   }
-
-  if (payload.content != null) {
-    const serialized = typeof payload.content === 'string'
-      ? payload.content
-      : JSON.stringify(payload.content);
-    fields.push('content = ?');
-    params.push(serialized);
-
-    // keep content_plain in sync
-    fields.push('content_plain = ?');
-    params.push(extractPlainText(serialized) || null);
-  }
-
-  if (!fields.length) return await getDocumentById(id);
-
-  const sql = `UPDATE documents SET ${fields.join(', ')} WHERE id = ?`;
-  params.push(id);
-  await query(sql, params);
-
-  return await getDocumentById(id);
 }
 
-async function getDocumentById(id) {
-  const rows = await query(`SELECT * FROM documents WHERE id = ?`, [id]);
-  return rows[0] || null;
+function normalizeContent(content) {
+  const serialized = serializeContent(content);
+  const plain = extractPlainText(serialized) || null;
+  return { serialized, plain };
 }
-
-async function listDocumentsByNav(navigation_item_id) {
-  return await query(
-    `SELECT * FROM documents WHERE navigation_item_id = ? ORDER BY updated_at DESC`,
-    [navigation_item_id]
-  );
-}
-
-module.exports = {
-  createDocument,
-  updateDocument,
-  getDocumentById,
-  listDocumentsByNav,
-};
 
 async function listDocuments(navigation_item_id) {
-  const rows = await query(
+  return await query(
     `SELECT d.id, d.navigation_item_id, d.title, d.content, d.updated_at, u.full_name AS updated_by_name
-     FROM documents d
-     LEFT JOIN users u ON u.id = d.updated_by
-     WHERE d.navigation_item_id = ?
-     ORDER BY d.updated_at DESC`,
+       FROM documents d
+       LEFT JOIN users u ON u.id = d.updated_by
+      WHERE d.navigation_item_id = ?
+      ORDER BY d.updated_at DESC`,
     [navigation_item_id]
   );
-  return rows;
 }
 
 async function getDocument(id) {
   const rows = await query(
     `SELECT d.*, u.full_name AS updated_by_name
-     FROM documents d
-     LEFT JOIN users u ON u.id = d.updated_by
-     WHERE d.id = ?`,
+       FROM documents d
+       LEFT JOIN users u ON u.id = d.updated_by
+      WHERE d.id = ?`,
     [id]
   );
   return rows[0] || null;
 }
 
 async function createDocument({ navigation_item_id, title, content }, userId) {
+  const { serialized, plain } = normalizeContent(content);
+
   const result = await query(
-    `INSERT INTO documents (navigation_item_id, title, content, updated_by)
-     VALUES (?, ?, ?, ?)`,
-    [navigation_item_id, title, content, userId]
+    `INSERT INTO documents (navigation_item_id, title, content, content_plain, updated_by)
+     VALUES (?, ?, ?, ?, ?)`,
+    [navigation_item_id, title, serialized, plain, userId ?? null]
   );
+
   return getDocument(result.insertId);
 }
 
 async function updateDocument(id, { title, content }, userId) {
   const sets = [];
   const params = [];
-  if (title !== undefined) { sets.push('title = ?'); params.push(title); }
-  if (content !== undefined) { sets.push('content = ?'); params.push(content); }
-  sets.push('updated_by = ?'); params.push(userId);
+
+  if (title !== undefined) {
+    sets.push('title = ?');
+    params.push(title);
+  }
+
+  if (content !== undefined) {
+    const { serialized, plain } = normalizeContent(content);
+    sets.push('content = ?');
+    params.push(serialized);
+    sets.push('content_plain = ?');
+    params.push(plain);
+  }
+
+  if (userId !== undefined) {
+    sets.push('updated_by = ?');
+    params.push(userId);
+  }
+
+  if (!sets.length) {
+    return getDocument(id);
+  }
+
+  sets.push('updated_at = NOW()');
+  const sql = `UPDATE documents SET ${sets.join(', ')} WHERE id = ?`;
   params.push(id);
-  await query(`UPDATE documents SET ${sets.join(', ')}, updated_at = NOW() WHERE id = ?`, params);
+  await query(sql, params);
+
   return getDocument(id);
 }
 
@@ -115,10 +91,10 @@ async function searchDocuments(q) {
   const like = `%${q}%`;
   return await query(
     `SELECT id, title, navigation_item_id
-     FROM documents
-     WHERE title LIKE ? OR content LIKE ?
-     ORDER BY updated_at DESC
-     LIMIT 50`,
+       FROM documents
+      WHERE title LIKE ? OR content LIKE ?
+      ORDER BY updated_at DESC
+      LIMIT 50`,
     [like, like]
   );
 }
